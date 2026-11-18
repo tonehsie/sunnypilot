@@ -60,6 +60,13 @@ class CarControllerParams:
   STEER_DRIVER_MULTIPLIER = 3              # weight driver torque heavily
   STEER_DRIVER_FACTOR = 1                  # from dbc
 
+  # Sharan driver-intervention thresholds use decoded steeringTorque units,
+  # NOT the normalized actuator torque and NOT a value expressed in Nm here.
+  SHARAN_DRIVER_TORQUE_TRIGGER = 180
+  SHARAN_DRIVER_TORQUE_RELEASE = 100
+  SHARAN_LOW_SPEED_TORQUE_BP = [0.4, 3.5, 4.0]  # m/s
+  SHARAN_LOW_SPEED_TORQUE_V = [0.8, 0.95, 1.0]
+
   STEER_TIME_STUCK_TORQUE = 1.9            # EPS limits same torque to 6 seconds, reset timer 3x within that period
 
   DEFAULT_MIN_STEER_SPEED = 0.4            # m/s, newer EPS racks fault below this speed, don't show a low speed alert
@@ -68,9 +75,14 @@ class CarControllerParams:
   ACCEL_MIN = -3.5                         # 3.5 m/s max deceleration
 
   def __init__(self, CP):
+    self.SHARAN_DRIVER_TORQUE_GUARD_ENABLED = False
+    self.SHARAN_LOW_SPEED_TORQUE_SCALE_ENABLED = False
     # Sharan-only command ceiling: CAN units are 0.01 Nm. Do not raise Panda limits.
     if CP.carFingerprint == CAR.VOLKSWAGEN_SHARAN_MK2:
       self.STEER_MAX = 295                 # 2.95 Nm, reduced from the stock 3.00 Nm
+      # The legacy Cancel linkage is only for stock ACC, not alpha openpilot longitudinal.
+      self.SHARAN_DRIVER_TORQUE_GUARD_ENABLED = CP.pcmCruise and not CP.openpilotLongitudinalControl
+      self.SHARAN_LOW_SPEED_TORQUE_SCALE_ENABLED = True
 
     can_define = CANDefine(DBC[CP.carFingerprint][Bus.pt])
 
