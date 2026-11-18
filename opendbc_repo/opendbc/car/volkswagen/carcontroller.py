@@ -53,6 +53,8 @@ class CarController(CarControllerBase):
     self.gra_acc_counter_last = None
     self.hca_mitigation = HCAMitigation(self.CCP)
     self.driver_torque_safety_active = False
+    self.stock_acc_cancel_pending = False
+    self.driver_resume_inhibited = False
 
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
@@ -71,11 +73,25 @@ class CarController(CarControllerBase):
             self.driver_torque_safety_active = False
         elif abs(CS.out.steeringTorque) > self.CCP.SHARAN_DRIVER_TORQUE_TRIGGER:
           self.driver_torque_safety_active = True
+
+        # A short intervention can end before the next GRA counter. Keep Cancel
+        # pending until the car reports ACC off, rather than losing the request.
+        if self.driver_torque_safety_active:
+          self.stock_acc_cancel_pending = bool(CS.out.cruiseState.enabled)
+          self.driver_resume_inhibited = True
+        elif not CS.out.cruiseState.enabled:
+          self.stock_acc_cancel_pending = False
+
+        # Do not replay a Resume command that was held through the intervention.
+        if not self.driver_torque_safety_active and not self.stock_acc_cancel_pending and not CC.cruiseControl.resume:
+          self.driver_resume_inhibited = False
       else:
         self.driver_torque_safety_active = False
+        self.stock_acc_cancel_pending = False
+        self.driver_resume_inhibited = False
 
       apply_torque = 0
-      if CC.latActive and not self.driver_torque_safety_active:
+      if CC.latActive and not (self.driver_torque_safety_active or self.stock_acc_cancel_pending):
         torque_scale = 1.0
         if self.CCP.SHARAN_LOW_SPEED_TORQUE_SCALE_ENABLED:
           torque_scale = float(np.interp(CS.out.vEgo, self.CCP.SHARAN_LOW_SPEED_TORQUE_BP, self.CCP.SHARAN_LOW_SPEED_TORQUE_V))
@@ -136,11 +152,12 @@ class CarController(CarControllerBase):
     # **** Stock ACC Button Controls **************************************** #
 
     gra_send_ready = self.CP.pcmCruise and CS.gra_stock_values["COUNTER"] != self.gra_acc_counter_last
-    emergency_cancel = self.driver_torque_safety_active
-    if gra_send_ready and (CC.cruiseControl.cancel or CC.cruiseControl.resume or emergency_cancel):
+    emergency_cancel = self.driver_torque_safety_active or self.stock_acc_cancel_pending
+    send_cancel = CC.cruiseControl.cancel or emergency_cancel
+    send_resume = CC.cruiseControl.resume and not emergency_cancel and not self.driver_resume_inhibited
+    if gra_send_ready and (send_cancel or send_resume):
       can_sends.append(self.CCS.create_acc_buttons_control(self.packer_pt, self.CAN.ext, CS.gra_stock_values,
-                                                           cancel=CC.cruiseControl.cancel or emergency_cancel,
-                                                           resume=CC.cruiseControl.resume and not emergency_cancel))
+                                                           cancel=send_cancel, resume=send_resume))
 
     new_actuators = actuators.as_builder()
     new_actuators.torque = self.apply_torque_last / self.CCP.STEER_MAX
