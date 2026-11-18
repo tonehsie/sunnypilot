@@ -21,6 +21,7 @@ from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+from openpilot.sunnypilot.selfdrive.controls.lib.sharan_tuning import sharan_live_parameters, sharan_lateral_delay
 
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
@@ -78,7 +79,7 @@ class Controls(ControlsExt):
     CS = self.sm['carState']
 
     # Update VehicleModel
-    lp = self.sm['liveParameters']
+    lp = sharan_live_parameters(self.CP.carFingerprint, self.sm['liveParameters'])
     x = max(lp.stiffnessFactor, 0.1)
     sr = max(lp.steerRatio, 0.1)
     self.VM.update_params(x, sr)
@@ -140,7 +141,7 @@ class Controls(ControlsExt):
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
-    lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    lat_delay = sharan_lateral_delay(self.CP.carFingerprint, self.sm["liveDelay"].lateralDelay) + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
