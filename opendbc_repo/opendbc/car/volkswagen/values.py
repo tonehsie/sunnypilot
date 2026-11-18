@@ -68,6 +68,10 @@ class CarControllerParams:
   ACCEL_MIN = -3.5                         # 3.5 m/s max deceleration
 
   def __init__(self, CP):
+    # Sharan-only command ceiling: CAN units are 0.01 Nm. Do not raise Panda limits.
+    if CP.carFingerprint == CAR.VOLKSWAGEN_SHARAN_MK2:
+      self.STEER_MAX = 295                 # 2.95 Nm, reduced from the stock 3.00 Nm
+
     can_define = CANDefine(DBC[CP.carFingerprint][Bus.pt])
 
     if CP.flags & VolkswagenFlags.PQ:
