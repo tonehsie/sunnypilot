@@ -1,8 +1,10 @@
 import pyray as rl
+import math
 import time
 from dataclasses import dataclass
 from collections.abc import Callable
 from cereal import log
+from openpilot.common.gps import get_gps_location_service
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos, FONT_SCALE
 from openpilot.system.ui.lib.multilang import tr, tr_noop
@@ -71,9 +73,10 @@ class Sidebar(Widget, SidebarSP):
     self._net_type = NETWORK_TYPES.get(NetworkType.none)
     self._net_strength = 0
 
-    self._temp_status = MetricData(tr_noop("TEMP"), tr_noop("GOOD"), Colors.GOOD)
-    self._panda_status = MetricData(tr_noop("VEHICLE"), tr_noop("ONLINE"), Colors.GOOD)
-    self._connect_status = MetricData(tr_noop("CONNECT"), tr_noop("OFFLINE"), Colors.WARNING)
+    self._temp_status = MetricData("CPU --°C", "GPU --°C", Colors.GOOD)
+    self._panda_status = MetricData("GPS", "NO DATA", Colors.DANGER)
+    self._connect_status = MetricData("RAM --%", "SD --%", Colors.WARNING)
+    self._gps_service = get_gps_location_service(ui_state.params)
     self._recording_audio = False
 
     self._home_img = gui_app.texture("images/button_home.png", HOME_BTN.width, HOME_BTN.height)
@@ -105,17 +108,14 @@ class Sidebar(Widget, SidebarSP):
 
   def _update_state(self):
     sm = ui_state.sm
-    if not sm.updated['deviceState']:
-      return
-
-    device_state = sm['deviceState']
-
     self._recording_audio = ui_state.recording_audio
-    self._update_network_status(device_state)
-    self._update_temperature_status(device_state)
-    self._update_connection_status(device_state)
-    self._update_panda_status()
-    SidebarSP._update_sunnylink_status(self)
+    if sm.updated['deviceState']:
+      device_state = sm['deviceState']
+      self._update_network_status(device_state)
+      self._update_temperature_status(device_state)
+      self._update_connection_status(device_state)
+      SidebarSP._update_sunnylink_status(self)
+    self._update_gps_status()
 
   def _update_network_status(self, device_state):
     self._net_type = NETWORK_TYPES.get(device_state.networkType.raw, tr_noop("Unknown"))
@@ -123,27 +123,39 @@ class Sidebar(Widget, SidebarSP):
     self._net_strength = max(0, min(5, strength.raw + 1)) if strength.raw > 0 else 0
 
   def _update_temperature_status(self, device_state):
-    thermal_status = device_state.thermalStatus
-
-    if thermal_status == ThermalStatus.ok:
-      self._temp_status.update(tr_noop("TEMP"), tr_noop("GOOD"), Colors.GOOD)
-    else:
-      self._temp_status.update(tr_noop("TEMP"), tr_noop("HIGH"), Colors.DANGER)
+    cpu_temps = [float(t) for t in device_state.cpuTempC if math.isfinite(t)]
+    gpu_temps = [float(t) for t in device_state.gpuTempC if math.isfinite(t)]
+    cpu_text = f"CPU {max(cpu_temps):.0f}°C" if cpu_temps else "CPU --°C"
+    gpu_text = f"GPU {max(gpu_temps):.0f}°C" if gpu_temps else "GPU --°C"
+    color = Colors.GOOD if device_state.thermalStatus == ThermalStatus.ok else Colors.DANGER
+    self._temp_status.update(cpu_text, gpu_text, color)
 
   def _update_connection_status(self, device_state):
-    last_ping = device_state.lastAthenaPingTime
-    if last_ping == 0:
-      self._connect_status.update(tr_noop("CONNECT"), tr_noop("OFFLINE"), Colors.WARNING)
-    elif time.monotonic_ns() - last_ping < 80_000_000_000:  # 80 seconds in nanoseconds
-      self._connect_status.update(tr_noop("CONNECT"), tr_noop("ONLINE"), Colors.GOOD)
-    else:
-      self._connect_status.update(tr_noop("CONNECT"), tr_noop("ERROR"), Colors.DANGER)
+    ram_free = 100.0 - float(device_state.memoryUsagePercent)
+    disk_free = float(device_state.freeSpacePercent)
+    ram_free = max(0.0, min(100.0, ram_free)) if math.isfinite(ram_free) else None
+    disk_free = max(0.0, min(100.0, disk_free)) if math.isfinite(disk_free) else None
+    ram_text = f"RAM {ram_free:.0f}%" if ram_free is not None else "RAM --%"
+    # SD is the historical label; this is internal /data free space, not an SD card.
+    disk_text = f"SD {disk_free:.0f}%" if disk_free is not None else "SD --%"
+    available = [value for value in (ram_free, disk_free) if value is not None]
+    least_free = min(available) if available else 0.0
+    color = Colors.DANGER if least_free < 10 else Colors.WARNING if least_free < 20 else Colors.GOOD
+    self._connect_status.update(ram_text, disk_text, color)
 
-  def _update_panda_status(self):
-    if ui_state.panda_type == log.PandaState.PandaType.unknown:
-      self._panda_status.update(tr_noop("NO"), tr_noop("PANDA"), Colors.DANGER)
+  def _update_gps_status(self):
+    sm = ui_state.sm
+    service = self._gps_service
+    if not sm.alive.get(service, False) or not sm.valid.get(service, False):
+      self._panda_status.update("GPS", "NO DATA", Colors.DANGER)
+      return
+
+    gps = sm[service]
+    if gps.hasFix:
+      value = f"{gps.satelliteCount} SAT" if gps.satelliteCount > 0 else "CONNECTED"
+      self._panda_status.update("GPS", value, Colors.GOOD)
     else:
-      self._panda_status.update(tr_noop("VEHICLE"), tr_noop("ONLINE"), Colors.GOOD)
+      self._panda_status.update("GPS", "NO FIX", Colors.DANGER)
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
     if rl.check_collision_point_rec(mouse_pos, SETTINGS_BTN):
@@ -196,10 +208,11 @@ class Sidebar(Widget, SidebarSP):
       y = int(y_pos + dot_size // 2)
       rl.draw_circle(x, y, dot_size // 2, color)
 
-    # Network type text
+    # Taiwan date/time (UTC+8), independent of the device timezone setting.
     text_y = rect.y + 247
-    text_pos = rl.Vector2(rect.x + 58, text_y)
-    rl.draw_text_ex(self._font_regular, tr(self._net_type), text_pos, FONT_SIZE, 0, Colors.WHITE)
+    text_pos = rl.Vector2(rect.x + 30, text_y)
+    clock_text = time.strftime("%m-%d %H:%M", time.gmtime(time.time() + 8 * 3600))
+    rl.draw_text_ex(self._font_regular, clock_text, text_pos, FONT_SIZE, 0, Colors.WHITE)
 
   def _draw_metrics(self, rect: rl.Rectangle):
     if gui_app.sunnypilot_ui():
