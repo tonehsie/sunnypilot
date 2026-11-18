@@ -1,3 +1,4 @@
+import math
 import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL, structs
@@ -51,6 +52,7 @@ class CarController(CarControllerBase):
     self.apply_torque_last = 0
     self.gra_acc_counter_last = None
     self.hca_mitigation = HCAMitigation(self.CCP)
+    self.driver_torque_safety_active = False
 
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
@@ -60,9 +62,24 @@ class CarController(CarControllerBase):
     # **** Steering Controls ************************************************ #
 
     if self.frame % self.CCP.STEER_STEP == 0:
+      if self.CCP.SHARAN_DRIVER_TORQUE_GUARD_ENABLED:
+        # Invalid CAN/torque cannot release a latched intervention. No Nm conversion here.
+        if not CS.out.canValid or not math.isfinite(CS.out.steeringTorque):
+          self.driver_torque_safety_active = True
+        elif self.driver_torque_safety_active:
+          if abs(CS.out.steeringTorque) < self.CCP.SHARAN_DRIVER_TORQUE_RELEASE:
+            self.driver_torque_safety_active = False
+        elif abs(CS.out.steeringTorque) > self.CCP.SHARAN_DRIVER_TORQUE_TRIGGER:
+          self.driver_torque_safety_active = True
+      else:
+        self.driver_torque_safety_active = False
+
       apply_torque = 0
-      if CC.latActive:
-        new_torque = int(round(actuators.torque * self.CCP.STEER_MAX))
+      if CC.latActive and not self.driver_torque_safety_active:
+        torque_scale = 1.0
+        if self.CCP.SHARAN_LOW_SPEED_TORQUE_SCALE_ENABLED:
+          torque_scale = float(np.interp(CS.out.vEgo, self.CCP.SHARAN_LOW_SPEED_TORQUE_BP, self.CCP.SHARAN_LOW_SPEED_TORQUE_V))
+        new_torque = int(round(actuators.torque * self.CCP.STEER_MAX * torque_scale))
         apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.CCP)
 
       apply_torque = self.hca_mitigation.update(apply_torque, self.apply_torque_last)
@@ -119,9 +136,11 @@ class CarController(CarControllerBase):
     # **** Stock ACC Button Controls **************************************** #
 
     gra_send_ready = self.CP.pcmCruise and CS.gra_stock_values["COUNTER"] != self.gra_acc_counter_last
-    if gra_send_ready and (CC.cruiseControl.cancel or CC.cruiseControl.resume):
+    emergency_cancel = self.driver_torque_safety_active
+    if gra_send_ready and (CC.cruiseControl.cancel or CC.cruiseControl.resume or emergency_cancel):
       can_sends.append(self.CCS.create_acc_buttons_control(self.packer_pt, self.CAN.ext, CS.gra_stock_values,
-                                                           cancel=CC.cruiseControl.cancel, resume=CC.cruiseControl.resume))
+                                                           cancel=CC.cruiseControl.cancel or emergency_cancel,
+                                                           resume=CC.cruiseControl.resume and not emergency_cancel))
 
     new_actuators = actuators.as_builder()
     new_actuators.torque = self.apply_torque_last / self.CCP.STEER_MAX
