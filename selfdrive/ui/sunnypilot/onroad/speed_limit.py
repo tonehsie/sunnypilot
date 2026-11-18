@@ -5,6 +5,9 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import os
+import stat
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 import pyray as rl
@@ -26,6 +29,8 @@ METER_TO_MILE = 0.000621371
 AHEAD_THRESHOLD = 5
 SET_SPEED_NA = 255
 KM_TO_MILE = 0.621371
+# Local tmpfs only. mtime carries a monotonic heartbeat, not a wall-clock date.
+_WARNING_STAMP = f"/dev/shm/sunnypilot-hud-warning-{os.getuid()}.stamp"
 
 AssistState = custom.LongitudinalPlanSP.SpeedLimit.AssistState
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
@@ -115,6 +120,8 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
+    self._chime_was_red = False
+    self._chime_next_ping_ns = 0
 
     self.font_bold = gui_app.font(FontWeight.BOLD)
     self.font_demi = gui_app.font(FontWeight.SEMI_BOLD)
@@ -181,6 +188,24 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
     sz = measure_text_cached(font, text, size)
     rl.draw_text_ex(font, text, rl.Vector2(pos_center.x - sz.x / 2, pos_center.y - sz.y / 2), size, 0, color)
 
+  def _sync_warning_chime(self, red: bool) -> None:
+    now = time.monotonic_ns()
+    if red == self._chime_was_red and (not red or now < self._chime_next_ping_ns):
+      return
+    self._chime_was_red = red
+    self._chime_next_ping_ns = now + 200_000_000
+    try:
+      flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+      fd = os.open(_WARNING_STAMP, flags | (os.O_CREAT if red else 0), 0o600)
+      try:
+        st = os.fstat(fd)
+        if stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid() and st.st_nlink == 1 and st.st_size == 0:
+          os.utime(fd, ns=(0, now if red else 0))
+      finally:
+        os.close(fd)
+    except OSError:
+      pass  # the optional sound link must not prevent the native HUD from drawing
+
   def _render(self, rect: rl.Rectangle):
     width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
     x = rect.x + 60 + width + 30 - 6
@@ -196,6 +221,8 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
         self._draw_pre_active_arrow(sign_rect)
       else:
         self._draw_ahead_info(sign_rect)
+    else:
+      self._sync_warning_chime(False)
 
   def _draw_sign_main(self, rect, alpha=1.0):
     speed_limit_warning_enabled = ui_state.speed_limit_mode >= SpeedLimitMode.warning
@@ -218,6 +245,8 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
       self._render_vienna(rect, limit_str, sub_text, txt_color, has_limit, alpha)
     else:
       self._render_mutcd(rect, limit_str, sub_text, txt_color, has_limit, alpha)
+    # Use the color actually selected/drawn above, not an independent speed calculation.
+    self._sync_warning_chime(ui_state.speed_limit_mode == SpeedLimitMode.warning and txt_color is Colors.RED)
 
   def _draw_pre_active_arrow(self, sign_rect):
     _, txt_icon, icon_alpha, _, _ = SpeedLimitAlertRenderer.speed_limit_pre_active_icon_helper(self)
