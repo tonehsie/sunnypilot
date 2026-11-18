@@ -27,6 +27,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
+from openpilot.sunnypilot.selfdrive.controls.lib.sharan_tuning import sharan_lateral_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 
 PROCESS_NAME = "selfdrive.modeld.modeld"
@@ -216,6 +217,7 @@ def main(demo=False):
   else:
     CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
   cloudlog.info("modeld got CarParams: %s", CP.brand)
+  model.lat_delay = sharan_lateral_delay(CP.carFingerprint, model.lat_delay)
 
   # TODO this needs more thought, use .2s extra for now to estimate other delays
   # TODO Move smooth seconds to action function
@@ -263,7 +265,7 @@ def main(demo=False):
     frame_id = sm["roadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
     if sm.frame % 60 == 0:
-      model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
+      model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay, CP.carFingerprint)
     lat_delay = model.lat_delay + LAT_SMOOTH_SECONDS
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)

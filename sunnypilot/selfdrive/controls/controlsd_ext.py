@@ -17,6 +17,7 @@ from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
+from openpilot.sunnypilot.selfdrive.controls.lib.sharan_tuning import sharan_lateral_delay
 
 
 class ControlsExt(ModelStateBase):
@@ -24,6 +25,7 @@ class ControlsExt(ModelStateBase):
     ModelStateBase.__init__(self)
     self.CP = CP
     self.params = params
+    self.lat_delay = sharan_lateral_delay(CP.carFingerprint, self.lat_delay)
     self._param_update_time: float = 0.0
     self.blinker_pause_lateral = BlinkerPauseLateral()
 
@@ -52,7 +54,7 @@ class ControlsExt(ModelStateBase):
       self.blinker_pause_lateral.get_params()
 
       if self.CP.lateralTuning.which() == 'torque':
-        self.lat_delay = get_lat_delay(self.params, sm["liveDelay"].lateralDelay)
+        self.lat_delay = get_lat_delay(self.params, sm["liveDelay"].lateralDelay, self.CP.carFingerprint)
 
       self._param_update_time = time.monotonic()
 

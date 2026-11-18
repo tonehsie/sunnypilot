@@ -10,6 +10,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.common.pid import PIDController
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
+from openpilot.sunnypilot.selfdrive.controls.lib.sharan_tuning import apply_sharan_torque_params, is_sharan
 
 # At higher speeds (25+mph) we can assume:
 # Lateral acceleration achieved by a specific car correlates to
@@ -49,6 +50,7 @@ class LatControlTorque(LatControl):
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
+    self.use_sharan_factor_curve = is_sharan(CP.carFingerprint)
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -62,7 +64,10 @@ class LatControlTorque(LatControl):
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
     # Override torque params from extension
-    if self.extension.update_override_torque_params(self.torque_params):
+    torque_params_changed = self.extension.update_override_torque_params(self.torque_params)
+    if self.use_sharan_factor_curve and not self.extension._nnlc_enabled:
+      torque_params_changed = apply_sharan_torque_params(self.torque_params, CS.vEgo) or torque_params_changed
+    if torque_params_changed:
       self.update_limits()
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
