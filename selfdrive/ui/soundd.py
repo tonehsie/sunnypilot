@@ -1,5 +1,7 @@
 import math
+import os
 import numpy as np
+import stat
 import time
 import wave
 
@@ -34,6 +36,21 @@ if HARDWARE.get_device_type() == "tizi":
 
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 AudibleAlertSP = custom.SelfdriveStateSP.AudibleAlert
+
+# The HUD refreshes this tmpfs marker only while it draws a red Warning sign.
+_WARNING_STAMP = f"/dev/shm/sunnypilot-hud-warning-{os.getuid()}.stamp"
+_WARNING_LEASE_NS = 600_000_000
+
+
+def _hud_warning_deadline():
+  try:
+    st = os.stat(_WARNING_STAMP, follow_symlinks=False)
+    if (stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid() and st.st_nlink == 1 and st.st_size == 0 and
+        st.st_mtime_ns > 0 and 0 <= time.monotonic_ns() - st.st_mtime_ns < _WARNING_LEASE_NS):
+      return st.st_mtime_ns + _WARNING_LEASE_NS
+  except OSError:
+    pass
+  return 0
 
 
 sound_list_sp: dict[int, tuple[str, int | None, float]] = {
@@ -87,6 +104,8 @@ class Soundd(QuietMode):
     self.ramp_start_time = 0.
 
     self.selfdrive_timeout_alert = False
+    self._sign_until_ns = 0
+    self._sign_frame = 0  # owned by the audio callback; never reuse the native alert cursor
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
@@ -110,6 +129,7 @@ class Soundd(QuietMode):
     ret = np.zeros(frames, dtype=np.float32)
 
     if self.should_play_sound(self.current_alert):
+      self._sign_frame = 0
       num_loops = sound_list[self.current_alert][1]
       sound_data = self.loaded_sounds[self.current_alert]
       written_frames = 0
@@ -123,6 +143,16 @@ class Soundd(QuietMode):
         ret[written_frames:written_frames+frames_to_write] = sound_data[current_sound_frame:current_sound_frame+frames_to_write]
         written_frames += frames_to_write
         self.current_sound_frame += frames_to_write
+    elif self.current_alert == AudibleAlert.none and not self.enabled and time.monotonic_ns() < self._sign_until_ns:
+      sample = self.loaded_sounds[AudibleAlertSP.promptSingleLow]
+      written = 0
+      while sample.size and written < frames:
+        count = min(frames - written, sample.size - self._sign_frame)
+        ret[written:written+count] = sample[self._sign_frame:self._sign_frame+count]
+        self._sign_frame = (self._sign_frame + count) % sample.size
+        written += count
+    else:
+      self._sign_frame = 0
 
     return ret * self.current_volume
 
@@ -183,6 +213,9 @@ class Soundd(QuietMode):
           self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
 
         self.get_audible_alert(sm)
+        # No GPS/plan subscriptions or work in the audio callback to fetch UI state.
+        self._sign_until_ns = (_hud_warning_deadline() if self.current_alert == AudibleAlert.none and not self.enabled and
+                               sm.alive['selfdriveState'] and sm.valid['selfdriveState'] else 0)
 
         # Ramp up immediate warning sound over 4s
         if self.current_alert == AudibleAlert.warningImmediate:
