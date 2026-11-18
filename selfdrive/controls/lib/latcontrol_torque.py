@@ -4,6 +4,7 @@ from collections import deque
 
 from cereal import log
 from opendbc.car.lateral import FRICTION_THRESHOLD, get_friction
+from opendbc.car.volkswagen.values import CAR
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
@@ -34,6 +35,19 @@ JERK_GAIN = 0.3
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
+# Sharan-only factor schedule. Higher factor reduces the requested torque for a
+# given lateral-acceleration command; this is not an EPS torque limit.
+SHARAN_FACTOR_TRANSITION_KPH = 35.0
+SHARAN_FACTOR_STOPPED = 5.0
+SHARAN_FACTOR_CRUISE = 1.8
+
+
+def sharan_lat_accel_factor(v_ego):
+  speed_fraction = min(max(v_ego * 3.6 / SHARAN_FACTOR_TRANSITION_KPH, 0.0), 1.0)
+  smooth_fraction = speed_fraction * speed_fraction * (3.0 - 2.0 * speed_fraction)
+  return SHARAN_FACTOR_CRUISE + (SHARAN_FACTOR_STOPPED - SHARAN_FACTOR_CRUISE) * (1.0 - smooth_fraction)
+
+
 class LatControlTorque(LatControl):
   def __init__(self, CP, CP_SP, CI, dt):
     super().__init__(CP, CP_SP, CI, dt)
@@ -49,6 +63,7 @@ class LatControlTorque(LatControl):
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
+    self.use_sharan_factor_curve = CP.carFingerprint == CAR.VOLKSWAGEN_SHARAN_MK2
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -62,7 +77,15 @@ class LatControlTorque(LatControl):
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
     # Override torque params from extension
-    if self.extension.update_override_torque_params(self.torque_params):
+    torque_params_changed = self.extension.update_override_torque_params(self.torque_params)
+    # Apply after live/UI overrides so they cannot replace the speed schedule.
+    # NNLC has its own torque model and is deliberately left unchanged.
+    if self.use_sharan_factor_curve and not self.extension._nnlc_enabled:
+      factor = sharan_lat_accel_factor(CS.vEgo)
+      if self.torque_params.latAccelFactor != factor:
+        self.torque_params.latAccelFactor = factor
+        torque_params_changed = True
+    if torque_params_changed:
       self.update_limits()
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
