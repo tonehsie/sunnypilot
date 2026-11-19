@@ -1,3 +1,5 @@
+"""Synthetic route identifiers reproduce counter-reset ordering without user UUIDs."""
+
 import ast
 import importlib.util
 import os
@@ -59,7 +61,7 @@ class RouteCounterCase:
     yield
     self.tmp.cleanup()
 
-  def segment(self, count, segment=0, token="aacc850778", root=None):
+  def segment(self, count, segment=0, token="0123456789", root=None):
     path = (self.root if root is None else root) / f"{count:08x}--{token}--{segment}"
     path.mkdir()
     return path
@@ -71,8 +73,8 @@ class RouteCounterCase:
 class TestRouteCounter(RouteCounterCase):
   def test_observed_reset_raises_8_to_170(self):
     self.segment(0xA9, 25)
-    self.segment(7, 11, "6410ac7901")
-    self.segment(7, 12, "6410ac7901")
+    self.segment(7, 11, "fedcba9876")
+    self.segment(7, 12, "fedcba9876")
     params = FakeParams(8)
     assert self.reconcile(params)
     assert params.writes == [('RouteCount', 170, True)]
@@ -84,8 +86,8 @@ class TestRouteCounter(RouteCounterCase):
     ns = {}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(uploader), "exec"), ns)
     key = ns["get_directory_sort"]
-    old = "000000a9--aacc850778--25"
-    reset = "00000007--6410ac7901--0"
+    old = "000000a9--0123456789--25"
+    reset = "00000007--fedcba9876--0"
     assert sorted([old, reset], key=key) == [reset, old]
     self.segment(0xA9, 25)
     params = FakeParams(8)
