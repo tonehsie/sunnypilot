@@ -31,6 +31,7 @@ from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.button_state_tracker import ButtonStateTracker
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
+from openpilot.sunnypilot.selfdrive.selfdrived.stock_acc_chime import StockAccChime
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -122,6 +123,7 @@ class SelfdriveD(CruiseHelper):
 
     self.CS_prev = car.CarState.new_message()
     self.AM = AlertManager()
+    self.stock_acc_chime = StockAccChime(self.CP)
     self.events = Events()
 
     self.initialized = False
@@ -566,7 +568,7 @@ class SelfdriveD(CruiseHelper):
     ss.alertSize = self.AM.current_alert.alert_size
     ss.alertStatus = self.AM.current_alert.alert_status
     ss.alertType = self.AM.current_alert.alert_type
-    ss.alertSound = self.AM.current_alert.audible_alert
+    ss.alertSound = self.stock_acc_chime.get_sound(self.AM.current_alert.audible_alert, self.sm.frame)
     ss.alertHudVisual = self.AM.current_alert.visual_alert
 
     self.pm.send('selfdriveState', ss_msg)
@@ -613,6 +615,7 @@ class SelfdriveD(CruiseHelper):
       self.enabled, self.active = self.state_machine.update(self.events)
     if not self.CP.notCar:
       self.mads.update(CS)
+    self.stock_acc_chime.update(CS, self.initialized, self.sm.frame)
     self.update_alerts(CS)
 
     self.button_state_tracker.update(CS)
