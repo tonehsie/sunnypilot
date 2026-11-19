@@ -131,11 +131,13 @@ class CarController(CarControllerBase):
 
     # **** HUD Controls ***************************************************** #
 
+    steering_inhibited = self.driver_torque_safety_active or self.stock_acc_cancel_pending
+    effective_lat_active = CC.latActive and not steering_inhibited
     if self.frame % self.CCP.LDW_STEP == 0:
       hud_alert = 0
-      if hud_control.visualAlert in (VisualAlert.steerRequired, VisualAlert.ldw):
+      if hud_control.visualAlert in (VisualAlert.steerRequired, VisualAlert.ldw) or (CC.latActive and steering_inhibited):
         hud_alert = self.CCP.LDW_MESSAGES["laneAssistTakeOver"]
-      can_sends.append(self.CCS.create_lka_hud_control(self.packer_pt, self.CAN.pt, CS.ldw_stock_values, CC.latActive,
+      can_sends.append(self.CCS.create_lka_hud_control(self.packer_pt, self.CAN.pt, CS.ldw_stock_values, effective_lat_active,
                                                        CS.out.steeringPressed, hud_alert, hud_control))
 
     if self.frame % self.CCP.ACC_HUD_STEP == 0 and self.CP.openpilotLongitudinalControl:
