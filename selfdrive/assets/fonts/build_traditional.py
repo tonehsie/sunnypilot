@@ -10,10 +10,13 @@ import re
 
 from PIL import Image, ImageDraw, ImageFont
 
-FONT_SIZE = 48
-PADDING = 3
-ATLAS_WIDTH = 2048
-# Supplement catalog glyphs with vehicle/settings terminology; not all Unicode.
+FONT_SIZE = 36
+BASELINE = round(FONT_SIZE * 39 / 48)
+PADDING = 2
+ATLAS_WIDTH = 4096
+MAX_ATLAS_HEIGHT = 4096
+# UI terms stay first for raylib's linear glyph lookup. Dynamic text is covered
+# by the complete Big5 + OpFont codepoint manifest, not this hand-picked list.
 EXTRA_TC = """
 學習維持輔助轉向扭矩方向盤回正角度偏移剛性側傾延遲摩擦加速度曲線
 原生預設固定即時手動自動控制啟動啟用取消停用停止暫停恢復退出保持
@@ -46,7 +49,12 @@ def required_codepoints(font_dir):
   text += EXTRA_TC + "".join(labels)
   # Native emoji rendering handles supplementary emoji such as the fire icon.
   original = {int(cp) for cp in re.findall(r"^char id=(\d+)", (font_dir / "unifont.fnt").read_text(), re.M) if 32 <= int(cp) <= 0xFFFF}
-  return sorted(original | set(range(32, 127)) | {ord(c) for c in text if 127 <= ord(c) <= 0xFFFF})
+  common = original | set(range(32, 127)) | {ord(c) for c in text if 127 <= ord(c) <= 0xFFFF}
+  manifest = json.loads((font_dir / "TraditionalChinese-codepoints.json").read_text(encoding="utf-8"))
+  broad = set(manifest["codepoints"])
+  if any(not isinstance(cp, int) or not 32 <= cp <= 0xFFFF for cp in broad):
+    raise RuntimeError("Invalid Traditional Chinese codepoint manifest")
+  return sorted(common) + sorted(broad - common)
 
 
 def _pixel_font(path, size=FONT_SIZE):
@@ -69,26 +77,33 @@ def _glyphs(font_dir, weight, codepoints):
   inter = _pixel_font(font_dir / f"Inter-{weight}.ttf")
   chinese = _pixel_font(font_dir / f"OpFont-{weight}.otf")
   fallback = _pixel_font(font_dir / f"SunnyTCFallback-{weight}.otf")
+  math_font = _pixel_font(font_dir / "NotoSansMath-Regular.ttf")
   missing_inter = _mask_signature(inter, "\uffff")
   missing_chinese = _mask_signature(chinese, "\uffff")
   missing_fallback = _mask_signature(fallback, "\uffff")
+  missing_math = _mask_signature(math_font, "\uffff")
   glyphs = []
   for cp in codepoints:
     char = chr(cp)
     candidates = ([(chinese, missing_chinese), (fallback, missing_fallback)] if _is_cjk(cp) else
-                  [(inter, missing_inter), (chinese, missing_chinese)])
+                  [(inter, missing_inter), (chinese, missing_chinese), (fallback, missing_fallback), (math_font, missing_math)])
     selected = next((font for font, missing in candidates if _mask_signature(font, char) != missing), None)
     if selected is None:
       raise RuntimeError(f"Unsupported required glyph U+{cp:04X} {char!r}")
     x0, y0, x1, y1 = selected.getbbox(char, anchor="ls")
+    # A few decorative source glyphs extend beyond their font's ascent/descent.
+    # Fit these individually rather than clipping outlines or expanding the line.
+    while y1 - y0 > FONT_SIZE and selected.size > 1:
+      selected = selected.font_variant(size=selected.size - 1)
+      x0, y0, x1, y1 = selected.getbbox(char, anchor="ls")
     width, height = max(x1-x0, 1), max(y1-y0, 1)
     bitmap = Image.new("L", (width, height))
     ImageDraw.Draw(bitmap).text((-x0, -y0), char, font=selected, fill=255, anchor="ls")
-    # A common baseline aligns CJK with Latin and keeps pixels inside a 48px line.
+    # Keep the same normalized baseline as the earlier 48px atlas.
     if height > FONT_SIZE:
       raise RuntimeError(f"Glyph U+{cp:04X} exceeds line height: {height}")
     # Preserve complete inherited glyphs (e.g. Thai descenders), never crop them.
-    offset_y = min(max(39 + y0, 0), FONT_SIZE - height)
+    offset_y = min(max(BASELINE + y0, 0), FONT_SIZE - height)
     glyphs.append(dict(id=cp, bitmap=bitmap, width=width, height=height,
                        xoffset=x0, yoffset=offset_y, xadvance=round(selected.getlength(char))))
   return glyphs
@@ -97,7 +112,9 @@ def _glyphs(font_dir, weight, codepoints):
 def _atlas(font_dir, weight, codepoints):
   glyphs = _glyphs(font_dir, weight, codepoints)
   x = y = row_height = PADDING
-  for glyph in glyphs:
+  # Pack tall glyphs together to avoid wasting full rows on one tall symbol.
+  # Keep the emitted glyph order unchanged (common UI first).
+  for glyph in sorted(glyphs, key=lambda g: (-g["height"], -g["width"], g["id"])):
     if x + glyph["width"] + PADDING > ATLAS_WIDTH:
       x = PADDING
       y += row_height + PADDING
@@ -107,24 +124,25 @@ def _atlas(font_dir, weight, codepoints):
     row_height = max(row_height, glyph["height"])
   used_height = y + row_height + PADDING
   height = 2 ** math.ceil(math.log2(used_height))
-  if height > 2048:
-    raise RuntimeError(f"Atlas too large ({ATLAS_WIDTH}x{height}); split instead of increasing GPU memory")
-  atlas = Image.new("RGBA", (ATLAS_WIDTH, height), (255, 255, 255, 0))
+  if height > MAX_ATLAS_HEIGHT:
+    raise RuntimeError(f"Atlas too large ({ATLAS_WIDTH}x{height}); exceeds the fixed texture budget")
+  # Same two-channel white + alpha format as native unifont.png, not RGBA.
+  atlas = Image.new("LA", (ATLAS_WIDTH, height), (255, 0))
   name = f"TraditionalChinese-{weight}"
   lines = [
     f'info face="{name}" size=-{FONT_SIZE} bold={int(weight=="Bold")} italic=0 charset="" unicode=1 stretchH=100 smooth=1 aa=1 padding=0,0,0,0 spacing=0,0 outline=0',
-    f'common lineHeight={FONT_SIZE} base=39 scaleW={ATLAS_WIDTH} scaleH={height} pages=1 packed=0 alphaChnl=0 redChnl=4 greenChnl=4 blueChnl=4',
+    f'common lineHeight={FONT_SIZE} base={BASELINE} scaleW={ATLAS_WIDTH} scaleH={height} pages=1 packed=0 alphaChnl=0 redChnl=4 greenChnl=4 blueChnl=4',
     f'page id=0 file="{name}.png"',
     f'chars count={len(glyphs)}',
   ]
   for glyph in glyphs:
-    bitmap = Image.new("RGBA", glyph["bitmap"].size, (255, 255, 255, 0))
+    bitmap = Image.new("LA", glyph["bitmap"].size, (255, 0))
     bitmap.putalpha(glyph["bitmap"])
     atlas.paste(bitmap, (glyph["x"], glyph["y"]))
     lines.append(('char id={id} x={x} y={y} width={width} height={height} xoffset={xoffset} yoffset={yoffset} xadvance={xadvance} page=0 chnl=15').format(**glyph))
   atlas.save(font_dir / f"{name}.png")
   (font_dir / f"{name}.fnt").write_text("\n".join(lines)+"\n", encoding="utf-8")
-  return dict(weight=weight, glyphs=len(glyphs), width=ATLAS_WIDTH, height=height, rgba_bytes=ATLAS_WIDTH*height*4)
+  return dict(weight=weight, glyphs=len(glyphs), width=ATLAS_WIDTH, height=height, texture_bytes=ATLAS_WIDTH*height*2)
 
 
 def build_fonts(font_dir=None):

@@ -5,9 +5,14 @@ Unmodified source: dragonpilot/dragonpilot commit 94ad85cfda64773a960d048dc11cac
 Inter glyphs: Copyright 2020 The Inter Project Authors (https://github.com/rsms/inter).
 Inter source remains the existing openpilot Inter-Regular.ttf and Inter-Bold.ttf.
 The derived atlas face names are TraditionalChinese-Regular and TraditionalChinese-Bold.
-SunnyTCFallback-Regular/Bold are renamed, one-glyph subsets of NotoSansTC:
+SunnyTCFallback-Regular/Bold are renamed coverage subsets of NotoSansCJKtc:
 Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
-NotoSansTC source: notofonts/noto-cjk, Sans/SubsetOTF/TC, SIL OFL 1.1.
+NotoSansCJKtc source: notofonts/noto-cjk, Sans/OTF/TraditionalChinese, SIL OFL 1.1.
+NotoSansMath-Regular.ttf is unmodified: Copyright 2018 Google LLC. All Rights Reserved.
+Source: notofonts/noto-fonts, hinted/ttf/NotoSansMath, SIL OFL 1.1.
+It supplies Big5 math symbols.
+Atlas coverage: full Big5 repertoire + printable BMP OpFont repertoire + UI catalog.
+This is not a complete Unicode/CNS11643/HKSCS font.
 These names do not claim endorsement by any upstream author.
 
 This Font Software is licensed under the SIL Open Font License,
