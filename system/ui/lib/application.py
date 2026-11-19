@@ -707,9 +707,10 @@ class GuiApplication(GuiApplicationExt):
           png_path = fnt_path.with_suffix(".png")
           if fnt_path.is_file() and png_path.is_file():
             font = rl.load_font(fnt_path.as_posix())
-            if font.baseSize == 48 and font.glyphCount >= 300 and font.texture.id != 0:
-              rl.gen_texture_mipmaps(font.texture)
-              rl.set_texture_filter(font.texture, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
+            if font.baseSize == 36 and font.glyphCount >= 19000 and font.texture.id != 0:
+              # Broad CJK atlases have a fixed 4096px budget. Do not allocate
+              # another ~1/3 texture memory for mipmaps; UI text uses bilinear.
+              rl.set_texture_filter(font.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
               self._fonts[font_weight] = font
             elif font.texture.id not in (0, rl.get_font_default().texture.id):
               rl.unload_font(font)
