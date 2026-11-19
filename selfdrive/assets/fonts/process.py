@@ -125,10 +125,13 @@ def main():
   base_cp, unifont_cp = _char_sets()
   fonts = sorted(FONT_DIR.glob("*.ttf")) + sorted(FONT_DIR.glob("*.otf"))
   for font in fonts:
-    if "emoji" in font.name.lower():
+    if "emoji" in font.name.lower() or font.name.startswith(("OpFont-", "SunnyTCFallback-")):
       continue
     glyphs = unifont_cp if font.stem.lower().startswith("unifont") else base_cp
     _process_font(font, glyphs)
+  # The dedicated builder preserves the existing Latin fonts and bakes CJK coverage.
+  from build_traditional import build_fonts
+  build_fonts(FONT_DIR)
   return 0
 
 
