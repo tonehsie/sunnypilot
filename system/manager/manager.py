@@ -21,6 +21,7 @@ from openpilot.common.swaglog import cloudlog, add_file_handler
 from openpilot.system.version import get_build_metadata
 from openpilot.system.hardware.hw import Paths
 from openpilot.system.hardware import PC
+from openpilot.system.loggerd.route_counter import reconcile_route_count
 
 from openpilot.sunnypilot.system.params_migration import run_migration
 
@@ -59,6 +60,14 @@ def manager_init() -> None:
     default_value = params.get_default_value(k)
     if default_value is not None and params.get(k) is None:
       params.put(k, default_value, block=True)
+
+  # Retained logs can outlive params/fork installs. Reconcile before loggerd or
+  # deleter starts, so a reset route counter cannot make new logs sort oldest.
+  if os.getenv("PREPAREONLY") is None:
+    log_roots = [Paths.log_root()]
+    if os.path.ismount(Paths.log_root_external()):
+      log_roots.append(Paths.log_root_external())
+    reconcile_route_count(params, log_roots, cloudlog)
 
   # Create folders needed for msgq
   try:
