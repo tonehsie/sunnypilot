@@ -103,6 +103,8 @@ class FontWeight(StrEnum):
   SEMI_BOLD = "Inter-SemiBold.fnt"
   UNIFONT = "unifont.fnt"
   AUDIOWIDE = "Audiowide-Regular.fnt"
+  TRADITIONAL_NORMAL = "TraditionalChinese-Regular.fnt"
+  TRADITIONAL_BOLD = "TraditionalChinese-Bold.fnt"
 
   # Small UI fonts
   DISPLAY_REGULAR = "Inter-Regular.fnt"
@@ -110,8 +112,24 @@ class FontWeight(StrEnum):
   DISPLAY = "Inter-Bold.fnt"
 
 
-def font_fallback(font: rl.Font) -> rl.Font:
-  """Fall back to unifont for languages that require it."""
+TRADITIONAL_FONTS = (FontWeight.TRADITIONAL_NORMAL, FontWeight.TRADITIONAL_BOLD)
+
+
+def _contains_cjk(text: str) -> bool:
+  return any(0x2E80 <= ord(c) <= 0x9FFF or 0xF900 <= ord(c) <= 0xFAFF or 0xFF00 <= ord(c) <= 0xFFEF for c in text)
+
+
+def font_fallback(font: rl.Font, text: str | None = None) -> rl.Font:
+  """Use smooth Traditional Chinese glyphs, keeping ASCII and other languages unchanged."""
+  if multilang.language == "zh-CHT":
+    if text is not None and not _contains_cjk(text):
+      if text.isascii() and font.texture.id == gui_app.font(FontWeight.UNIFONT).texture.id:
+        return gui_app.font(FontWeight.NORMAL)
+      return font
+    bold_ids = {gui_app.font(weight).texture.id for weight in (FontWeight.BOLD, FontWeight.SEMI_BOLD)}
+    bold = font.texture.id in bold_ids or (FontWeight.TRADITIONAL_BOLD in gui_app._fonts and
+                                          font.texture.id == gui_app._fonts[FontWeight.TRADITIONAL_BOLD].texture.id)
+    return gui_app.font(FontWeight.TRADITIONAL_BOLD if bold else FontWeight.TRADITIONAL_NORMAL)
   if multilang.requires_unifont():
     return gui_app.font(FontWeight.UNIFONT)
   return font
@@ -201,6 +219,7 @@ class GuiApplication(GuiApplicationExt):
     self._set_log_callback()
 
     self._fonts: dict[FontWeight, rl.Font] = {}
+    self._unavailable_traditional_fonts: set[FontWeight] = set()
     self._width = width if width is not None else GuiApplication._default_width()
     self._height = height if height is not None else GuiApplication._default_height()
 
@@ -681,6 +700,23 @@ class GuiApplication(GuiApplicationExt):
       pass
 
   def font(self, font_weight: FontWeight = FontWeight.NORMAL) -> rl.Font:
+    if font_weight in TRADITIONAL_FONTS and font_weight not in self._fonts:
+      if font_weight not in self._unavailable_traditional_fonts:
+        with as_file(FONT_DIR) as fspath:
+          fnt_path = fspath / font_weight.value
+          png_path = fnt_path.with_suffix(".png")
+          if fnt_path.is_file() and png_path.is_file():
+            font = rl.load_font(fnt_path.as_posix())
+            if font.baseSize == 48 and font.glyphCount >= 300 and font.texture.id != 0:
+              rl.gen_texture_mipmaps(font.texture)
+              rl.set_texture_filter(font.texture, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
+              self._fonts[font_weight] = font
+            elif font.texture.id not in (0, rl.get_font_default().texture.id):
+              rl.unload_font(font)
+          if font_weight not in self._fonts:
+            cloudlog.warning(f"Traditional Chinese font unavailable: {fnt_path}; using original Unifont")
+            self._unavailable_traditional_fonts.add(font_weight)
+      return self._fonts.get(font_weight, self._fonts[FontWeight.UNIFONT])
     return self._fonts[font_weight]
 
   @property
@@ -693,6 +729,8 @@ class GuiApplication(GuiApplicationExt):
 
   def _load_fonts(self):
     for font_weight_file in FontWeight:
+      if font_weight_file in TRADITIONAL_FONTS:
+        continue  # lazy-loaded only for Traditional Chinese
       with as_file(FONT_DIR) as fspath:
         fnt_path = fspath / font_weight_file
         font = rl.load_font(fnt_path.as_posix())
@@ -700,6 +738,9 @@ class GuiApplication(GuiApplicationExt):
           rl.gen_texture_mipmaps(font.texture)
           rl.set_texture_filter(font.texture, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
         self._fonts[font_weight_file] = font
+    if multilang.language == "zh-CHT":
+      for font_weight in TRADITIONAL_FONTS:
+        self.font(font_weight)
     rl.gui_set_font(self._fonts[FontWeight.NORMAL])
 
   def _set_styles(self):
@@ -715,7 +756,7 @@ class GuiApplication(GuiApplicationExt):
       rl._orig_draw_text_ex = rl.draw_text_ex
 
     def _draw_text_ex_scaled(font, text, position, font_size, spacing, tint):
-      font = font_fallback(font)
+      font = font_fallback(font, text)
       return rl._orig_draw_text_ex(font, text, position, font_size * FONT_SCALE, spacing, tint)
 
     rl.draw_text_ex = _draw_text_ex_scaled
