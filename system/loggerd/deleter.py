@@ -4,6 +4,7 @@ import time
 import shutil
 import threading
 from pathlib import Path
+from openpilot.system.hardware import AGNOS
 from openpilot.system.hardware.hw import Paths
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.loggerd.config import get_available_bytes, get_available_percent
@@ -12,12 +13,27 @@ from openpilot.system.loggerd.xattr_cache import getxattr
 
 MIN_BYTES = 5 * 1024 * 1024 * 1024
 MIN_PERCENT = 10
+EXTERNAL_MIN_PERCENT = 2
 
 DELETE_LAST = ['boot', 'crash']
 
 PRESERVE_ATTR_NAME = 'user.preserve'
 PRESERVE_ATTR_VALUE = b'1'
 PRESERVE_COUNT = 5
+
+
+def min_available_percent(path: str) -> int:
+  # Only an independent filesystem at the standard recording path gets 2%.
+  # Missing/unmounted/unknown storage keeps the original internal reserve.
+  if AGNOS:
+    try:
+      path = os.path.realpath(path)
+      if path == "/data/media/0/realdata":
+        if Path(path).is_mount() and os.stat(path).st_dev != os.stat("/data").st_dev:
+          return EXTERNAL_MIN_PERCENT
+    except OSError:
+      pass
+  return MIN_PERCENT
 
 
 def has_preserve_xattr(d: str) -> bool:
@@ -49,8 +65,9 @@ def get_preserved_segments(dirs_by_creation: list[str]) -> set[str]:
 
 def deleter_thread(exit_event: threading.Event):
   while not exit_event.is_set():
+    min_percent = min_available_percent(Paths.log_root())
     out_of_bytes = get_available_bytes(default=MIN_BYTES + 1) < MIN_BYTES
-    out_of_percent = get_available_percent(default=MIN_PERCENT + 1) < MIN_PERCENT
+    out_of_percent = get_available_percent(default=min_percent + 1) < min_percent
 
     if out_of_percent or out_of_bytes:
       dirs = listdir_by_creation(Paths.log_root())

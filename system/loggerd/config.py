@@ -1,4 +1,5 @@
 import os
+from openpilot.system.hardware import AGNOS
 from openpilot.system.hardware.hw import Paths
 
 
@@ -10,8 +11,10 @@ STATS_SOCKET = "ipc:///tmp/stats"
 STATS_FLUSH_TIME_S = 60
 
 PATH_DICT = {
+  # The historical "internal" key means the active recording filesystem.
   "internal": Paths.log_root(),
-  "external": Paths.log_root_external()
+  "external": Paths.log_root_external(),
+  "system": "/data" if AGNOS else Paths.log_root(),
 }
 
 def get_available_percent(default: float, path_type="internal") -> float:
