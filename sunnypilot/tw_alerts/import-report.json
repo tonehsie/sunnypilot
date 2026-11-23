@@ -1,0 +1,55 @@
+{
+  "126156-1.csv": {
+    "input": 14,
+    "points": 25
+  },
+  "13940-1.zip": {
+    "input": 177,
+    "points": 177,
+    "reviewed_reference": 1
+  },
+  "169929-1.csv": {
+    "input": 2617,
+    "points": 2617,
+    "estimated_heading": 202
+  },
+  "170672-1.csv": {
+    "input": 386,
+    "reviewed_reference": 275,
+    "points": 277,
+    "excluded": 109,
+    "same_address_reference": 2
+  },
+  "172174-1.csv": {
+    "input": 89,
+    "points": 89
+  },
+  "172725-1.csv": {
+    "input": 3,
+    "points": 3
+  },
+  "173211-1.csv": {
+    "input": 62,
+    "points": 62
+  },
+  "178168-1.csv": {
+    "input": 145,
+    "points": 145
+  },
+  "25935-1.csv": {
+    "input": 118,
+    "points": 118
+  },
+  "7320-1.csv": {
+    "input": 1910,
+    "embedded_header": 1,
+    "points": 1909
+  },
+  "83881-1.csv": {
+    "input": 225,
+    "points": 225
+  },
+  "83881-2.csv": {
+    "duplicate_file": true
+  }
+}

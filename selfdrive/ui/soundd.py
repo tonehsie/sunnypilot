@@ -2,6 +2,7 @@ import math
 import os
 import numpy as np
 import stat
+import threading
 import time
 import wave
 
@@ -104,6 +105,7 @@ class Soundd(QuietMode):
     self.ramp_start_time = 0.
 
     self.selfdrive_timeout_alert = False
+    self._tw_voice = None
     self._sign_until_ns = 0
     self._sign_frame = 0  # owned by the audio callback; never reuse the native alert cursor
 
@@ -128,6 +130,7 @@ class Soundd(QuietMode):
 
     ret = np.zeros(frames, dtype=np.float32)
 
+    voice_allowed = False
     if self.should_play_sound(self.current_alert):
       self._sign_frame = 0
       num_loops = sound_list[self.current_alert][1]
@@ -144,6 +147,7 @@ class Soundd(QuietMode):
         written_frames += frames_to_write
         self.current_sound_frame += frames_to_write
     elif self.current_alert == AudibleAlert.none and not self.enabled and time.monotonic_ns() < self._sign_until_ns:
+      voice_allowed = True  # mix only with our optional speed-limit reminder, never native alerts
       sample = self.loaded_sounds[AudibleAlertSP.promptSingleLow]
       written = 0
       while sample.size and written < frames:
@@ -153,6 +157,15 @@ class Soundd(QuietMode):
         written += count
     else:
       self._sign_frame = 0
+      voice_allowed = self.current_alert == AudibleAlert.none and not self.enabled
+
+    voice = self._tw_voice
+    if voice is not None and voice_allowed:
+      try:
+        voice.render(ret, True, time.monotonic())
+      except Exception:
+        # Optional audio must never abort the PortAudio callback; no logging/I/O here.
+        self._tw_voice = None
 
     return ret * self.current_volume
 
@@ -199,6 +212,24 @@ class Soundd(QuietMode):
     sm = messaging.SubMaster(['selfdriveState', 'selfdriveStateSP', 'soundPressure'])
 
     with self.get_stream(sd) as stream:
+      def load_tw_voice():
+        try:
+          from openpilot.sunnypilot.tw_alerts.audio import Voice
+          self._tw_voice = Voice()
+        except Exception:
+          cloudlog.exception("Optional TW voice assets unavailable")
+
+      tw_sm = None
+      tw_service = None
+      if HARDWARE.get_device_type() == "tizi" and not os.path.exists("/data/disable_tw_road_voice"):
+        try:
+          from openpilot.common.gps import get_gps_location_service
+          tw_service = get_gps_location_service(self.params)
+          tw_sm = messaging.SubMaster([tw_service])
+          threading.Thread(target=load_tw_voice, daemon=True).start()
+        except Exception:
+          cloudlog.exception("Optional TW GPS unavailable")
+
       rk = Ratekeeper(20)
 
       cloudlog.info(f"soundd stream started: {stream.samplerate=} {stream.channels=} {stream.dtype=} {stream.device=}, {stream.blocksize=}")
@@ -216,6 +247,18 @@ class Soundd(QuietMode):
         # No GPS/plan subscriptions or work in the audio callback to fetch UI state.
         self._sign_until_ns = (_hud_warning_deadline() if self.current_alert == AudibleAlert.none and not self.enabled and
                                sm.alive['selfdriveState'] and sm.valid['selfdriveState'] else 0)
+        if self._tw_voice is not None and tw_sm is not None:
+          try:
+            tw_sm.update(0)
+            permitted = (sm.alive['selfdriveState'] and sm.valid['selfdriveState'] and not self.enabled
+                         and self.current_alert == AudibleAlert.none)
+            self._tw_voice.update(tw_sm, tw_service, time.monotonic(), permitted)
+          except Exception:
+            voice = self._tw_voice
+            if voice is not None:
+              voice.revoke(time.monotonic())
+            tw_sm = None
+            cloudlog.exception("Optional TW voice disabled for this drive")
 
         # Ramp up immediate warning sound over 4s
         if self.current_alert == AudibleAlert.warningImmediate:

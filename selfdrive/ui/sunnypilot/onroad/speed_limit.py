@@ -122,6 +122,13 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
     self.v_ego_cluster_seen: bool = False
     self._chime_was_red = False
     self._chime_next_ping_ns = 0
+    self._tw_hud = None
+    if HARDWARE.get_device_type() == "tizi":
+      try:
+        from openpilot.sunnypilot.tw_alerts.hud import Hud
+        self._tw_hud = Hud()
+      except (OSError, ImportError):
+        pass
 
     self.font_bold = gui_app.font(FontWeight.BOLD)
     self.font_demi = gui_app.font(FontWeight.SEMI_BOLD)
@@ -223,6 +230,19 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
         self._draw_ahead_info(sign_rect)
     else:
       self._sync_warning_chime(False)
+
+    if self._tw_hud is not None:
+      sm = ui_state.sm
+      allowed = (sm.alive["selfdriveState"] and sm.valid["selfdriveState"]
+                 and sm["selfdriveState"].alertSize.raw == 0 and not self.speed_limit_ahead_valid
+                 and self.speed_limit_assist_state != AssistState.preActive)
+      info = self._tw_hud.text(time.monotonic(), sm["carState"].vEgo, allowed)
+      if info:
+        box = rl.Rectangle(sign_rect.x, sign_rect.y + sign_rect.height + 12, 245, 78)
+        rl.draw_rectangle_rounded(box, 0.25, 8, Colors.SUB_BG)
+        for i, line in enumerate(info):
+          self._draw_text_centered(self.font_demi, line, 29 if i == 0 else 25,
+                                   rl.Vector2(box.x + box.width/2, box.y + 21 + 36*i), Colors.WHITE)
 
   def _draw_sign_main(self, rect, alpha=1.0):
     speed_limit_warning_enabled = ui_state.speed_limit_mode >= SpeedLimitMode.warning
