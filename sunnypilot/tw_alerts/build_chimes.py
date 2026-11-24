@@ -1,4 +1,4 @@
-"""Rebuild the three offline 48 kHz mono bell patterns; no speech or TTS."""
+"""Rebuild the two offline 48 kHz mono bell patterns; no speech or TTS."""
 import wave
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import numpy as np
 
 RATE = 48000
 # (bell frequencies, seconds between note starts). Fixed gets a single long bell.
-PATTERNS = {"mobile": ((620, 785, 990), .16), "sign": ((805, 570), .23), "fixed": ((485,), .25)}
+PATTERNS = {"sign": ((805, 570), .23), "fixed": ((485,), .25)}
 
 
 def chime(tones, step):

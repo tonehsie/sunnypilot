@@ -3,8 +3,8 @@ import math
 from collections import defaultdict
 from typing import NamedTuple
 
-FAMILY = {"mobile": "mobile", "sign": "sign", **dict.fromkeys(("fixed", "section", "combined", "red", "tech", "listed"), "fixed")}
-RANK = {"mobile": 0, "sign": 1, "fixed": 2}
+ENFORCEMENT = frozenset(("fixed", "mobile", "section", "combined", "red", "tech", "listed"))
+FAMILY = {"sign": "sign", **dict.fromkeys(ENFORCEMENT, "fixed")}
 CAMERA_BEFORE = {"ordinary": 300., "express": 600., "freeway": 800.}
 CAMERA_AFTER = 10.
 SIGN_BEFORE, SIGN_AFTER = 10., 300.
@@ -50,11 +50,51 @@ class Matcher:
 
   def reset(self):
     self.active = None
-    self.encounters = {}  # independent timers/distances, even for temporarily suppressed bells
+    self.encounters = {}  # keep independent windows even while a sign owns the bell
+    self.paired_signs = set()
     self.trusted_course = None
     self.course = 0.
     self.distance = 0.
     self.last = self.origin = None
+
+  def nearby(self, lat, lon, radius):
+    dlat = radius/111320
+    dlon = dlat/math.cos(math.radians(lat))
+    for i in range(int((lat-dlat)*100), int((lat+dlat)*100)+1):
+      for j in range(int((lon-dlon)*100), int((lon+dlon)*100)+1):
+        yield from self.grid.get((i,j), ())
+
+  @staticmethod
+  def on_approach(site, course):
+    return not site.headings or any(angle(course,h) <= 55 for h in site.headings)
+
+  @staticmethod
+  def width(site):
+    return 26 if site.headings else 15
+
+  def sign_has_point(self, sign, lat, lon, course):
+    # Measure from the SIGN, not from the current fix: a driver 10 m before a
+    # sign may be 310 m from a point at the far end of its 300 m zone.
+    for site in self.nearby(sign.lat, sign.lon, SIGN_AFTER + 45):
+      if site.kind not in ENFORCEMENT or not self.on_approach(site, course):
+        continue
+      along, side = relative(sign.lat,sign.lon,site,course)
+      _, road_side = relative(lat,lon,site,course)
+      if -EPS <= along <= SIGN_AFTER + EPS and side <= self.width(site) and road_side <= self.width(site):
+        return True
+    return False
+
+  @property
+  def sound_family(self):
+    if self.active is None:
+      return None
+    return "fixed" if self.active in self.paired_signs else FAMILY[self.active.kind]
+
+  @property
+  def hud_kind(self):
+    if self.active is None:
+      return None
+    return "sign_camera" if self.active in self.paired_signs else self.active.kind
 
   def fix(self, now, lat, lon, speed, bearing, accuracy, bearing_accuracy, *, modem_track=False):
     moving = speed >= 2
@@ -113,33 +153,44 @@ class Matcher:
 
     # Once course is corroborated, check every fresh moving fix, not just
     # every 12 m: the entire pre-sign window can lie between two 1 Hz fixes.
+    self.paired_signs.intersection_update(self.encounters)
     if moving and self.trusted_course is not None and angle(bearing,self.trusted_course) <= 45:
-      radius = max(CAMERA_BEFORE.values()) + 45
-      dlat = radius/111320
-      dlon = dlat/math.cos(math.radians(lat))
-      for i in range(int((lat-dlat)*100), int((lat+dlat)*100)+1):
-        for j in range(int((lon-dlon)*100), int((lon+dlon)*100)+1):
-          for site in self.grid.get((i,j), ()):
-            if site in self.encounters or (site in self.passed and angle(self.passed[site][1],bearing) < 75):
+      for site in self.nearby(lat, lon, max(CAMERA_BEFORE.values()) + 45):
+        if site in self.encounters or (site in self.passed and angle(self.passed[site][1],bearing) < 75):
+          continue
+        if not self.on_approach(site,bearing):
+          continue
+        ahead, side = relative(lat,lon,site,bearing)
+        width = self.width(site)
+        if side > width:
+          continue
+        if site.kind == "sign":
+          if ahead > SIGN_BEFORE + EPS:
+            continue
+          if ahead < 0:
+            prev, prev_side = relative(old[1],old[2],site,bearing)
+            if prev < 0 or prev_side > width or ahead <= -SIGN_AFTER + EPS:
               continue
-            if site.headings and all(angle(bearing,h)>55 for h in site.headings):
-              continue
-            ahead, side = relative(lat,lon,site,bearing)
-            width = 26 if site.headings else 15
-            if side > width:
-              continue
-            if site.kind == "sign":
-              if ahead > SIGN_BEFORE + EPS:
-                continue
-              if ahead < 0:
-                prev, prev_side = relative(old[1],old[2],site,bearing)
-                if prev < 0 or prev_side > width or ahead <= -SIGN_AFTER + EPS:
-                  continue  # no observed crossing; don't arm a sign already behind us
-            elif not 0 <= ahead <= CAMERA_BEFORE[site.road] + EPS:
-              continue
-            self.encounters[site] = (bearing, ahead)
-    # Keep the current point among equal ranks. Silenced encounters still advance.
-    self.active = min(self.encounters, key=lambda s:(RANK[FAMILY[s.kind]], s != self.active,
+          if self.sign_has_point(site,lat,lon,bearing):
+            self.paired_signs.add(site)
+        elif not 0 <= ahead <= CAMERA_BEFORE[site.road] + EPS:
+          continue
+        self.encounters[site] = (bearing, ahead)
+      # A gentle curve can hide a downstream point from the initial tangent.
+      # Only upgrade if driven distance + distance still ahead is inside the zone.
+      for sign, (_,dist) in self.encounters.items():
+        if sign.kind != "sign" or dist >= 0 or sign in self.paired_signs:
+          continue
+        for point in self.encounters:
+          if point.kind not in ENFORCEMENT or not self.on_approach(point,bearing):
+            continue
+          ahead,side = relative(lat,lon,point,bearing)
+          if 0 <= ahead and ahead-dist <= SIGN_AFTER + EPS and side <= self.width(point):
+            self.paired_signs.add(sign)
+            break
+    # A sign owns its zone. An unrelated nearby point must not relabel it.
+    # Outside sign windows, use the normal standalone enforcement windows.
+    self.active = min(self.encounters, key=lambda s:(0 if s in self.paired_signs else 1 if s.kind == "sign" else 2, s != self.active,
                       abs(self.encounters[s][1])), default=None)
     if self.active is not None:
       self.course, self.distance = self.encounters[self.active]

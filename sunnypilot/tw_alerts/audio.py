@@ -97,13 +97,15 @@ class Chimes:
     if site is None:
       self.silence(now)
       return
-    changed = self.request is None or self.request[0] != site
-    if changed:
+    clip = self.samples[self.matcher.sound_family]
+    tone_changed = self.request is None or self.request[2] is not clip
+    changed = tone_changed or self.request[0] != site
+    if tone_changed:
       self.generation += 1
-    self.request = (site, self.generation, self.samples[FAMILY[site.kind]], sm.recv_time[service]+FRESH)
+    self.request = (site, self.generation, clip, sm.recv_time[service]+FRESH)
     if changed or now-self.last_hud >= .4:
       self.last_hud = now
-      notify(site.kind, site.limit, self.matcher.distance, now)
+      notify(self.matcher.hud_kind, site.limit, self.matcher.distance, now)
 
   def render(self, out, allowed, now):
     req = self.request

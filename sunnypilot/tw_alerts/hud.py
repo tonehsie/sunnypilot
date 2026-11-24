@@ -7,7 +7,7 @@ import time
 from .matcher import CAMERA_BEFORE, SIGN_AFTER
 
 LABELS = {"sign":"警52 測速取締路段","fixed":"固定測速","mobile":"移動測速路段","section":"區間測速",
-          "combined":"測速及闖紅燈","red":"闖紅燈照相","tech":"科技執法","listed":"執法提醒"}
+          "combined":"測速及闖紅燈","red":"闖紅燈照相","tech":"科技執法","listed":"執法提醒","sign_camera":"警52 取締點路段"}
 KINDS = tuple(LABELS)
 PACKET = struct.Struct("!dBBh")  # signed: negative is past the reference point
 ADDRESS = "\0sp-tw-road-v2-" + str(os.getuid())
@@ -55,7 +55,7 @@ class Hud:
       self.event=None
       return None
     dist=m-max(0,speed)*(now-t)
-    if KINDS[k]=="sign" and dist<=0:
+    if KINDS[k] in ("sign","sign_camera") and dist<=0:
       detail=f"路段剩 {round(max(0,SIGN_AFTER+dist)/10)*10} m"
     else:
       detail=f"約 {round(max(0,dist)/10)*10} m"

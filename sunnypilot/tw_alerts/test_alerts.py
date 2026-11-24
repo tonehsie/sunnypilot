@@ -10,7 +10,7 @@ import numpy as np
 
 from .audio import GAP, GPS_SERVICES, ROOT, Chimes, gps_input
 from .build_chimes import PATTERNS, chime
-from .matcher import CAMERA_BEFORE, FAMILY, Matcher
+from .matcher import CAMERA_BEFORE, ENFORCEMENT, FAMILY, Matcher
 from .build_points import camera_road
 from .hud import Hud, KINDS, PACKET
 
@@ -34,16 +34,66 @@ class Tracking(unittest.TestCase):
         self.assertIsNone(fix(m,9,60))
         self.assertIsNone(fix(m,10,65))
 
-  def test_priorities_and_fallback_to_next_unpassed_site(self):
-    m=Matcher([row('fixed',70),row('sign',60),row('mobile',50)])
-    fix(m,0,0)
-    self.assertEqual(fix(m,1,10).kind,'mobile')
-    for i in range(2,6):self.assertEqual(fix(m,i,i*10).kind,'mobile')
-    self.assertEqual(fix(m,6,60).kind,'sign')  # crossed sign is still tracked under mobile
-    m=Matcher([row('section',280),row('sign',20),row('mobile',335)])
-    fix(m,0,0);self.assertEqual(fix(m,1,10).kind,'sign')
-    for i in range(2,5):active=fix(m,i,i*10)
-    self.assertEqual(active.kind,'mobile')
+  def test_latched_sign_uses_shared_fixed_bell_for_every_enforcement_type(self):
+    for kind in ENFORCEMENT:
+      with self.subTest(kind=kind):
+        m=Matcher([row(kind,60),row('sign',0)])
+        for t,y in enumerate(range(-20,301,10)):
+          s=fix(m,t,y)
+          if -10 <= y < 300:
+            self.assertEqual((s.kind,m.hud_kind,m.sound_family),('sign','sign_camera','fixed'))
+          elif y==300:
+            self.assertIsNone(s)
+
+  def test_pair_is_relative_to_sign_not_vehicle(self):
+    for pos,tone in [(-1,'sign'),(0,'fixed'),(299.9,'fixed'),(300,'fixed'),(300.1,'sign')]:
+      with self.subTest(pos=pos):
+        m=Matcher([row('sign',0),row('mobile',pos)])
+        fix(m,0,-20);fix(m,1,-10)
+        self.assertEqual(m.sound_family,tone)
+        for t,y in enumerate(range(0,300,10),2):
+          fix(m,t,y);self.assertEqual(m.sound_family,tone)
+
+  def test_no_pair_for_signs_opposing_direction_and_side_road(self):
+    for extra in [[],[row('sign',90)],[row('mobile',75,dirs=(180,))],
+                  [row('fixed',75,dirs=(90,))],[row('red',75,lateral=60)],
+                  [row('tech',75,lateral=20,dirs=())]]:
+      m=Matcher([row('sign',0),*extra])
+      for t,y in enumerate(range(-20,200,10)):
+        fix(m,t,y)
+        if y>=-10:
+          self.assertEqual((m.sound_family,m.hud_kind),('sign','sign'))
+
+  def test_unknown_direction_uses_narrow_corridor_and_cross_grid(self):
+    for east in (True,False):
+      sign=row('sign',0,dirs=());point=row('fixed',0,dirs=())
+      sign[1]=121.0099 if east else 121.0101
+      direction=1 if east else -1
+      k=111320*math.cos(math.radians(sign[0]))
+      point[1]=sign[1]+direction*60/k
+      m=Matcher([sign,point])
+      for t,d in enumerate((-25,-8)):
+        m.fix(t,sign[0],sign[1]+direction*d/k,12,90 if east else 270,4,5)
+      self.assertEqual(m.hud_kind,'sign_camera')
+
+  def test_bend_upgrades_only_when_remaining_zone_reaches_camera(self):
+    for distance,expected in [(145,'fixed'),(425,'sign')]:
+      course=30; rad=math.radians(course)
+      m=Matcher([row('sign',0),row('mobile',25+distance*math.cos(rad),distance*math.sin(rad),dirs=(course,))])
+      for t,y in enumerate((-20,-10,0,10,25)):
+        fix(m,t,y)
+      self.assertEqual(m.sound_family,'sign')
+      fix(m,5,25+10*math.cos(rad),10*math.sin(rad),course=course)
+      self.assertEqual(m.sound_family,expected)
+
+  def test_pair_state_not_inherited_on_reverse_or_gps_reset(self):
+    m=Matcher([row('sign',0,dirs=()),row('mobile',100,dirs=(0,))])
+    fix(m,0,-20);fix(m,1,-8)
+    self.assertEqual(m.sound_family,'fixed')
+    self.assertIsNone(fix(m,2,0,acc=55))
+    for t,y in enumerate((22,8,-3),3):
+      fix(m,t,y,course=180)
+    self.assertEqual((m.sound_family,m.hud_kind),('sign','sign'))
 
   def test_separate_encounters(self):
     m=Matcher([row('mobile',35),row('sign',55),row('fixed',420)])
@@ -90,7 +140,7 @@ class Tracking(unittest.TestCase):
   def test_hud_handles_highway_distance_and_after_sign(self):
     hud=object.__new__(Hud)
     for kind,meters,label in [('fixed',int(CAMERA_BEFORE['freeway']),f"約 {int(CAMERA_BEFORE['freeway'])} m"),
-                              ('sign',-100,'路段剩 200 m')]:
+                              ('sign',-100,'路段剩 200 m'),('sign_camera',-100,'路段剩 200 m')]:
       hud.sock=Mock();hud.event=None
       hud.sock.recv.side_effect=[PACKET.pack(10.,KINDS.index(kind),0,meters),BlockingIOError()]
       self.assertEqual(hud.text(10.,10.,True)[1],label)
@@ -140,7 +190,7 @@ class Audio(unittest.TestCase):
 
   def test_loop_without_restarting_on_each_fix(self):
     self.update(0,0);self.update(1,10)
-    key=self.v.request[1];sample=self.v.samples['mobile'];buf=np.zeros(len(sample)+GAP+len(sample))
+    key=self.v.request[1];sample=self.v.samples['fixed'];buf=np.zeros(len(sample)+GAP+len(sample))
     self.v.render(buf,True,1.01)
     np.testing.assert_array_equal(buf[:len(sample)],buf[-len(sample):])
     self.assertGreater(abs(buf[:len(sample)]).max(),.2)
@@ -199,7 +249,9 @@ class Audio(unittest.TestCase):
     self.sm[self.internal].hasFix=False
     self.update(5,45,service=self.internal);self.assertIsNone(self.v.request)
 
-  def test_only_three_tone_patterns_no_speech(self):
+  def test_only_two_tone_patterns_no_speech(self):
+    self.assertEqual(set(PATTERNS),{'sign','fixed'})
+    self.assertEqual({p.stem for p in (ROOT/'voice').glob('*.wav')},set(PATTERNS))
     for family,spec in PATTERNS.items():
       # Regenerate from pure notes and compare the entire shipped clip, not its prefix.
       pcm=chime(*spec)
@@ -226,9 +278,26 @@ class Audio(unittest.TestCase):
     self.assertEqual(len(pts),5647);self.assertEqual(sum(x.get('points',0) for x in aud.values()),len(pts))
     self.assertEqual(sum(x.get('reviewed_reference',0) for x in aud.values()),276)
     self.assertEqual(len(json.loads((ROOT/'pending.json').read_text())),109)
-    self.assertEqual(Counter(FAMILY[x[2]] for x in pts),{'mobile':277,'sign':2617,'fixed':2753})
-    self.assertEqual(set(self.v.samples),{'mobile','sign','fixed'})
-    self.assertEqual(len(set(v.tobytes()[:8000] for v in self.v.samples.values())),3)
+    self.assertEqual(Counter(FAMILY[x[2]] for x in pts),{'sign':2617,'fixed':3030})
+    self.assertEqual(sum(x[2]=='mobile' for x in pts),277)
+    self.assertEqual(set(self.v.samples),{'sign','fixed'})
+    self.assertEqual(len(set(v.tobytes()[:8000] for v in self.v.samples.values())),2)
+
+  def test_soundd_feed_continues_same_wave_between_camera_and_paired_sign(self):
+    for kind in ('fixed','mobile'):
+      self.v.revoke()
+      self.v.matcher=Matcher([row(kind,90),row('sign',30)])
+      self.update(0,0);self.update(1,10)
+      gen=self.v.request[1]
+      self.v.render(np.zeros(512),True,1.1)
+      self.update(2,20)  # sign now owns the HUD, but must not replay from frame zero
+      self.assertEqual((self.v.matcher.hud_kind,self.v.request[1]),('sign_camera',gen))
+      self.v.render(np.zeros(512),True,2.1);self.assertEqual(self.v.cursor,1024)
+      self.assertIs(self.v.request[2],self.v.samples['fixed'])
+    self.v.revoke()
+    self.v.matcher=Matcher([row('sign',20)])
+    self.update(0,0);self.update(1,10)
+    self.assertIs(self.v.request[2],self.v.samples['sign'])
 
 
 if __name__=='__main__':
