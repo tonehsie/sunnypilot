@@ -212,21 +212,19 @@ class Soundd(QuietMode):
     sm = messaging.SubMaster(['selfdriveState', 'selfdriveStateSP', 'soundPressure'])
 
     with self.get_stream(sd) as stream:
-      def load_tw_voice():
+      def load_tw_chimes():
         try:
-          from openpilot.sunnypilot.tw_alerts.audio import Voice
-          self._tw_voice = Voice()
+          from openpilot.sunnypilot.tw_alerts.audio import Chimes
+          self._tw_voice = Chimes()
         except Exception:
-          cloudlog.exception("Optional TW voice assets unavailable")
+          cloudlog.exception("Optional TW road chimes unavailable")
 
       tw_sm = None
-      tw_service = None
       if HARDWARE.get_device_type() == "tizi" and not os.path.exists("/data/disable_tw_road_voice"):
         try:
-          from openpilot.common.gps import get_gps_location_service
-          tw_service = get_gps_location_service(self.params)
-          tw_sm = messaging.SubMaster([tw_service])
-          threading.Thread(target=load_tw_voice, daemon=True).start()
+          from openpilot.sunnypilot.tw_alerts.audio import GPS_SERVICES
+          tw_sm = messaging.SubMaster(list(GPS_SERVICES))
+          threading.Thread(target=load_tw_chimes, daemon=True).start()
         except Exception:
           cloudlog.exception("Optional TW GPS unavailable")
 
@@ -252,13 +250,13 @@ class Soundd(QuietMode):
             tw_sm.update(0)
             permitted = (sm.alive['selfdriveState'] and sm.valid['selfdriveState'] and not self.enabled
                          and self.current_alert == AudibleAlert.none)
-            self._tw_voice.update(tw_sm, tw_service, time.monotonic(), permitted)
+            self._tw_voice.update(tw_sm, time.monotonic(), permitted)
           except Exception:
             voice = self._tw_voice
             if voice is not None:
               voice.revoke(time.monotonic())
             tw_sm = None
-            cloudlog.exception("Optional TW voice disabled for this drive")
+            cloudlog.exception("Optional TW road chimes disabled for this drive")
 
         # Ramp up immediate warning sound over 4s
         if self.current_alert == AudibleAlert.warningImmediate:

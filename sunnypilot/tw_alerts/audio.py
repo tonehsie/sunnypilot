@@ -13,9 +13,37 @@ ROOT = Path(__file__).resolve().parent
 RATE = 48000
 GAP = RATE * 3 // 4
 FRESH = 2.
+GPS_SERVICES = ("gpsLocationExternal", "gpsLocation")
 
 
-class Voice:
+def gps_input(gps, service):
+  """Return a usable fix (and whether course needs track validation), not an invented accuracy."""
+  if not gps.hasFix:
+    return None
+  lat, lon, speed, hacc = gps.latitude, gps.longitude, gps.speed, gps.horizontalAccuracy
+  if not (20 <= lat <= 27 and 117 <= lon <= 124 and 0 <= speed <= 60):
+    return None
+  modem = service == "gpsLocation" and str(gps.source) == "qcomdiag"
+  missing = modem and hacc == 0
+  if not (0 < hacc <= 20 or missing):
+    return None
+  heading, uncertainty = gps.bearingDeg, gps.bearingAccuracyDeg
+  if speed >= 2:
+    reported = -180 <= heading <= 360 and 0 <= uncertainty <= 35
+    if missing and len(gps.vNED) == 3:
+      north, east, _ = gps.vNED
+      horizontal_speed = math.hypot(north, east)
+      if 2 <= horizontal_speed <= 60 and abs(horizontal_speed-speed) <= max(2., speed*.30):
+        heading = math.degrees(math.atan2(east, north)) % 360
+      elif not reported:
+        return None
+    elif not reported:
+      return None
+    heading %= 360
+  return (lat, lon, speed, heading, hacc, uncertainty), missing
+
+
+class Chimes:
   def __init__(self, root=ROOT):
     self.matcher = Matcher(json.loads((root / "points.json").read_text()))
     self.samples = {}
@@ -32,6 +60,7 @@ class Voice:
     self.playing = None  # callback-owned cursor
     self.cursor = 0
     self.last_hud = -math.inf
+    self.service = None
 
   def silence(self, now):
     if self.request is not None:
@@ -42,20 +71,29 @@ class Voice:
   def revoke(self, now=0.):
     self.silence(now)
     self.matcher.reset()
+    self.service = None
 
-  def update(self, sm, service, now, permitted):
-    age = now-sm.recv_time[service]
-    if not permitted or not sm.alive[service] or not sm.valid[service] or not 0 <= age < FRESH:
+  def update(self, sm, now, permitted):
+    if not permitted:
       self.revoke(now)
       return
+    # Select by live data, not a startup-only copy of UbloxAvailable. Never mix
+    # the previous receiver's coordinates or course into a fresh approach.
+    for service in GPS_SERVICES:
+      if sm.alive[service] and sm.valid[service] and 0 <= now-sm.recv_time[service] < FRESH:
+        inputs = gps_input(sm[service], service)
+        if inputs is not None:
+          break
+    else:
+      self.revoke(now)
+      return
+    if self.service != service:
+      self.revoke(now)
+      self.service = service
     if not sm.updated[service]:
       return
-    gps = sm[service]
-    if not gps.hasFix:
-      self.revoke(now)
-      return
-    site = self.matcher.fix(sm.recv_time[service], gps.latitude, gps.longitude, gps.speed, gps.bearingDeg,
-                            gps.horizontalAccuracy, gps.bearingAccuracyDeg)
+    args, missing = inputs
+    site = self.matcher.fix(sm.recv_time[service], *args, modem_track=missing)
     if site is None:
       self.silence(now)
       return

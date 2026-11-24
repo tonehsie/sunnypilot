@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from .audio import GAP, ROOT, Voice
+from .audio import GAP, GPS_SERVICES, ROOT, Chimes, gps_input
+from .build_chimes import PATTERNS, chime
 from .matcher import FAMILY, Matcher
 
 
@@ -68,17 +69,21 @@ class Tracking(unittest.TestCase):
 
 class Audio(unittest.TestCase):
   def setUp(self):
-    self.v=Voice()
+    self.v=Chimes()
     self.v.matcher=Matcher([row('mobile',50)])
     class SM(dict):pass
-    g=NS(hasFix=True,latitude=24,longitude=121,speed=10,bearingDeg=0,bearingAccuracyDeg=5,horizontalAccuracy=4)
-    self.sm=SM(g=g)
-    self.sm.alive={'g':True};self.sm.valid={'g':True};self.sm.updated={'g':True};self.sm.recv_time={'g':0.}
+    self.ext,self.internal=GPS_SERVICES
+    g=NS(hasFix=True,latitude=24,longitude=121,speed=10,bearingDeg=0,bearingAccuracyDeg=5,horizontalAccuracy=4,source="ublox")
+    modem=NS(**{**vars(g),"source":"qcomdiag","vNED":[10.,0.,0.],"horizontalAccuracy":0.,"bearingAccuracyDeg":180.})
+    self.sm=SM({self.ext:g,self.internal:modem})
+    self.sm.alive={self.ext:True,self.internal:False};self.sm.valid=dict.fromkeys(GPS_SERVICES,True)
+    self.sm.updated=dict.fromkeys(GPS_SERVICES,True);self.sm.recv_time=dict.fromkeys(GPS_SERVICES,0.)
 
-  def update(self,i,m,permitted=True):
-    self.sm.recv_time['g']=i;self.sm['g'].latitude=24+m/111320
+  def update(self,i,m,permitted=True,service=None):
+    service=service or self.ext
+    self.sm.recv_time[service]=i;self.sm[service].latitude=24+m/111320
     with patch(__package__+'.audio.notify'):
-      self.v.update(self.sm,'g',i,permitted)
+      self.v.update(self.sm,i,permitted)
 
   def test_loop_without_restarting_on_each_fix(self):
     self.update(0,0);self.update(1,10)
@@ -101,8 +106,52 @@ class Audio(unittest.TestCase):
     self.update(2,20,False)
     self.assertIsNone(self.v.request)
     self.update(3,30);self.update(4,40)
-    self.sm['g'].hasFix=False;self.update(5,45)
+    self.sm[self.ext].hasFix=False;self.update(5,45)
     self.assertIsNone(self.v.request)
+
+  def test_real_modem_defaults_to_zero_accuracy_and_heading_uncertainty_180(self):
+    self.sm.alive={self.ext:False,self.internal:True}
+    for t,meters in enumerate((0, 3, 8)):
+      self.update(t,meters,service=self.internal)
+      self.assertIsNone(self.v.request)
+    self.update(3,15,service=self.internal)
+    self.assertEqual(self.v.request[0].kind,'mobile')
+    buf=np.zeros(4096);self.v.render(buf,True,3.05);self.assertGreater(abs(buf).max(),.2)
+    for t,meters in enumerate((25,35,45,55,59.9),4):
+      self.update(t,meters,service=self.internal)
+      self.assertIsNotNone(self.v.request)
+    self.update(9,60,service=self.internal)
+    self.assertIsNone(self.v.request)
+
+  def test_modem_cannot_play_without_good_motion_and_position(self):
+    m=self.sm[self.internal];self.sm.alive={self.ext:False,self.internal:True}
+    m.vNED=[-10.,0.,0.]  # reported south vs consecutive northbound fixes
+    for t,y in enumerate((0,15,30,45)):
+      self.update(t,y,service=self.internal);self.assertIsNone(self.v.request)
+    m.vNED=[];self.assertIsNone(gps_input(m,self.internal))
+    m.bearingDeg=-75;m.bearingAccuracyDeg=5
+    self.assertEqual(gps_input(m,self.internal)[0][3],285)
+    for name,bad in [('horizontalAccuracy',40),('horizontalAccuracy',float('nan')),('hasFix',False),('source','ublox'),('latitude',0)]:
+      with self.subTest(name=name),patch.object(m,name,bad):
+        self.assertIsNone(gps_input(m,self.internal))
+    self.sm[self.ext].horizontalAccuracy=0;self.assertIsNone(gps_input(self.sm[self.ext],self.ext))
+
+  def test_switch_gps_does_not_reuse_old_track(self):
+    self.update(0,0);self.update(1,10)
+    self.assertIsNotNone(self.v.request)
+    self.sm.alive[self.internal]=True
+    # External is stale; one modem fix must not inherit its alert.
+    self.update(3,25,service=self.internal);self.assertIsNone(self.v.request)
+    self.update(4,40,service=self.internal);self.assertIsNotNone(self.v.request)
+    self.sm[self.internal].hasFix=False
+    self.update(5,45,service=self.internal);self.assertIsNone(self.v.request)
+
+  def test_only_three_tone_patterns_no_speech(self):
+    for family,spec in PATTERNS.items():
+      # Regenerate from pure notes and compare the entire shipped clip, not its prefix.
+      pcm=chime(*spec)
+      np.testing.assert_allclose(self.v.samples[family]*32768, pcm, rtol=0, atol=1)
+      self.assertLess(len(pcm),48000)
 
   def test_actual_mixer_keeps_native_alarm_and_quiet_mode(self):
     tree=ast.parse((ROOT.parents[1]/'selfdrive/ui/soundd.py').read_text())

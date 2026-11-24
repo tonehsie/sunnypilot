@@ -47,11 +47,11 @@ class Matcher:
     self.distance = 0.
     self.last = self.origin = None
 
-  def fix(self, now, lat, lon, speed, bearing, accuracy, bearing_accuracy):
+  def fix(self, now, lat, lon, speed, bearing, accuracy, bearing_accuracy, *, modem_track=False):
     moving = speed >= 2
     if not (all(map(math.isfinite, (now, lat, lon, speed, accuracy))) and 20 <= lat <= 27 and 117 <= lon <= 124
-            and 0 <= speed <= 60 and 0 < accuracy <= 20 and
-            (not moving or (0 <= bearing < 360 and 0 <= bearing_accuracy <= 35))):
+            and 0 <= speed <= 60 and (0 < accuracy <= 20 or (modem_track and accuracy == 0)) and
+            (not moving or (0 <= bearing < 360 and (modem_track or 0 <= bearing_accuracy <= 35)))):
       self.reset()
       return None
     old = self.last
@@ -64,7 +64,9 @@ class Matcher:
       self.reset()
       return None
     dx, dy = offset(self.origin[1], self.origin[2], lat, lon)
-    progress = math.hypot(dx, dy) >= max(3, accuracy*.6)
+    # Unknown modem precision is not a perfect fix. Require actual displacement
+    # corroborating the modem's course before acquiring a point.
+    progress = math.hypot(dx, dy) >= (12. if modem_track else max(3, accuracy*.6))
     if progress:
       self.origin = self.last
       if moving and angle(math.degrees(math.atan2(dx,dy)), bearing) > 45:
