@@ -50,8 +50,7 @@ class Matcher:
 
   def reset(self):
     self.active = None
-    self.encounters = {}  # keep independent windows even while a sign owns the bell
-    self.paired_signs = set()
+    self.encounters = {}  # track each point and sign independently of the selected sound
     self.trusted_course = None
     self.course = 0.
     self.distance = 0.
@@ -72,29 +71,13 @@ class Matcher:
   def width(site):
     return 26 if site.headings else 15
 
-  def sign_has_point(self, sign, lat, lon, course):
-    # Measure from the SIGN, not from the current fix: a driver 10 m before a
-    # sign may be 310 m from a point at the far end of its 300 m zone.
-    for site in self.nearby(sign.lat, sign.lon, SIGN_AFTER + 45):
-      if site.kind not in ENFORCEMENT or not self.on_approach(site, course):
-        continue
-      along, side = relative(sign.lat,sign.lon,site,course)
-      _, road_side = relative(lat,lon,site,course)
-      if -EPS <= along <= SIGN_AFTER + EPS and side <= self.width(site) and road_side <= self.width(site):
-        return True
-    return False
-
   @property
   def sound_family(self):
-    if self.active is None:
-      return None
-    return "fixed" if self.active in self.paired_signs else FAMILY[self.active.kind]
+    return FAMILY[self.active.kind] if self.active is not None else None
 
   @property
   def hud_kind(self):
-    if self.active is None:
-      return None
-    return "sign_camera" if self.active in self.paired_signs else self.active.kind
+    return self.active.kind if self.active is not None else None
 
   def fix(self, now, lat, lon, speed, bearing, accuracy, bearing_accuracy, *, modem_track=False):
     moving = speed >= 2
@@ -126,6 +109,7 @@ class Matcher:
         self.trusted_course = bearing
 
     self.passed = {site:p for site,p in self.passed.items() if now-p[0] < 90}
+    completed_points = []
     for site, (axis, dist) in list(self.encounters.items()):
       is_sign = site.kind == "sign"
       if is_sign and dist <= 0:
@@ -146,6 +130,8 @@ class Matcher:
           del self.encounters[site]
           continue
       if dist <= -(SIGN_AFTER if is_sign else CAMERA_AFTER) + EPS:
+        if not is_sign:
+          completed_points.append((axis, dist))
         self.passed[site] = (now, axis)
         del self.encounters[site]
       else:
@@ -153,7 +139,6 @@ class Matcher:
 
     # Once course is corroborated, check every fresh moving fix, not just
     # every 12 m: the entire pre-sign window can lie between two 1 Hz fixes.
-    self.paired_signs.intersection_update(self.encounters)
     if moving and self.trusted_course is not None and angle(bearing,self.trusted_course) <= 45:
       for site in self.nearby(lat, lon, max(CAMERA_BEFORE.values()) + 45):
         if site in self.encounters or (site in self.passed and angle(self.passed[site][1],bearing) < 75):
@@ -171,27 +156,22 @@ class Matcher:
             prev, prev_side = relative(old[1],old[2],site,bearing)
             if prev < 0 or prev_side > width or ahead <= -SIGN_AFTER + EPS:
               continue
-          if self.sign_has_point(site,lat,lon,bearing):
-            self.paired_signs.add(site)
         elif not 0 <= ahead <= CAMERA_BEFORE[site.road] + EPS:
           continue
         self.encounters[site] = (bearing, ahead)
-      # A gentle curve can hide a downstream point from the initial tangent.
-      # Only upgrade if driven distance + distance still ahead is inside the zone.
-      for sign, (_,dist) in self.encounters.items():
-        if sign.kind != "sign" or dist >= 0 or sign in self.paired_signs:
-          continue
-        for point in self.encounters:
-          if point.kind not in ENFORCEMENT or not self.on_approach(point,bearing):
-            continue
-          ahead,side = relative(lat,lon,point,bearing)
-          if 0 <= ahead and ahead-dist <= SIGN_AFTER + EPS and side <= self.width(point):
-            self.paired_signs.add(sign)
-            break
-    # A sign owns its zone. An unrelated nearby point must not relabel it.
-    # Outside sign windows, use the normal standalone enforcement windows.
-    self.active = min(self.encounters, key=lambda s:(0 if s in self.paired_signs else 1 if s.kind == "sign" else 2, s != self.active,
-                      abs(self.encounters[s][1])), default=None)
+    # End the preceding sign's fallback when its downstream point actually
+    # finishes (+10 m), not on a turn-off or merely when a camera becomes audible.
+    # A distinct sign beyond the camera belongs to the next road section.
+    if completed_points:
+      for sign, (course, dist) in list(self.encounters.items()):
+        if sign.kind == "sign" and any(dist <= point_dist + EPS and angle(course, axis) <= 60
+                                       for axis, point_dist in completed_points):
+          self.passed[sign] = (now, course)
+          del self.encounters[sign]
+    # A camera owns its own approach/exit window even with no mapped sign.
+    # Prefer a nearer point of the same rank; audio keeps looping the same clip.
+    self.active = min(self.encounters, key=lambda s:(s.kind == "sign", abs(self.encounters[s][1]),
+                                                     s != self.active), default=None)
     if self.active is not None:
       self.course, self.distance = self.encounters[self.active]
     return self.active

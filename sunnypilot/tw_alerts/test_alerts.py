@@ -34,25 +34,61 @@ class Tracking(unittest.TestCase):
         self.assertIsNone(fix(m,9,60))
         self.assertIsNone(fix(m,10,65))
 
-  def test_latched_sign_uses_shared_fixed_bell_for_every_enforcement_type(self):
+  def test_point_owns_sound_hud_distance_and_end_for_every_enforcement_type(self):
     for kind in ENFORCEMENT:
       with self.subTest(kind=kind):
-        m=Matcher([row(kind,60),row('sign',0)])
-        for t,y in enumerate(range(-20,301,10)):
-          s=fix(m,t,y)
-          if -10 <= y < 300:
-            self.assertEqual((s.kind,m.hud_kind,m.sound_family),('sign','sign_camera','fixed'))
-          elif y==300:
+        m=Matcher([row(kind,120),row('sign',0)])
+        for t,y in enumerate(range(-200,311,5)):
+          s=fix(m,t*.5,y)
+          if -180 <= y < 130:
+            self.assertEqual((s.kind,m.hud_kind,m.sound_family),(kind,kind,'fixed'))
+            self.assertAlmostEqual(m.distance,120-y,places=5)
+          else:
             self.assertIsNone(s)
 
-  def test_pair_is_relative_to_sign_not_vehicle(self):
-    for pos,tone in [(-1,'sign'),(0,'fixed'),(299.9,'fixed'),(300,'fixed'),(300.1,'sign')]:
-      with self.subTest(pos=pos):
-        m=Matcher([row('sign',0),row('mobile',pos)])
-        fix(m,0,-20);fix(m,1,-10)
-        self.assertEqual(m.sound_family,tone)
-        for t,y in enumerate(range(0,300,10),2):
-          fix(m,t,y);self.assertEqual(m.sound_family,tone)
+  def test_400m_case_and_all_road_class_takeover_boundaries(self):
+    for road,reach in CAMERA_BEFORE.items():
+      with self.subTest(road=road):
+        point=reach+100  # ordinary road: point is 400 m beyond sign
+        m=Matcher([row('sign',0),row('mobile',point)+[road]])
+        for t,y in enumerate(range(-30,int(point)+31,5)):
+          fix(m,t*.5,y)
+          tone='sign' if -10 <= y < 100 else 'fixed' if 100 <= y < point+10 else None
+          self.assertEqual(m.sound_family,tone,(road,y))
+
+  def test_new_sign_downstream_of_completed_camera_remains_available(self):
+    for reverse in (False,True):
+      direction=-1 if reverse else 1
+      course=180 if reverse else 0
+      for loc,expected in ((-3,None),(0,None),(3,'sign'),(18,'sign')):
+        with self.subTest(reverse=reverse,loc=loc):
+          m=Matcher([row('fixed',0,dirs=(course,)),row('sign',loc*direction,dirs=(course,))])
+          for t,y in enumerate((-25,-15,-5,5,10,20)):
+            fix(m,t,y*direction,course=course)
+            if t:
+              self.assertEqual(m.sound_family,'fixed' if y<10 else expected)
+
+  def test_successive_points_continue_without_replaying_consumed_sign(self):
+    m=Matcher([row('fixed',40),row('sign',0),row('mobile',85)])
+    for t,y in enumerate(range(-30,301,5)):
+      fix(m,t*.5,y)
+      self.assertEqual(m.sound_family,'fixed' if t and y<95 else None)
+      if y==50:self.assertEqual(m.hud_kind,'mobile')
+
+  def test_losing_camera_without_passing_it_does_not_cancel_sign(self):
+    m=Matcher([row('sign',0),row('mobile',160)])
+    for t,y in enumerate((-25,-10,0,10)):
+      fix(m,t,y)
+    self.assertEqual(m.hud_kind,'mobile')
+    for t,step in enumerate((1,2,3,4,5),4):
+      fix(m,t,10+step*10,step*10,speed=15,course=45)
+    self.assertEqual((m.sound_family,m.hud_kind),('sign','sign'))
+
+  def test_sparse_fix_crosses_sign_and_camera_exit_together(self):
+    m=Matcher([row('sign',0),row('mobile',3)])
+    for t,y in enumerate((-50,-20,15,45)):
+      fix(m,t,y,speed=30)
+      self.assertEqual(m.sound_family,'fixed' if t==1 else None)
 
   def test_no_pair_for_signs_opposing_direction_and_side_road(self):
     for extra in [[],[row('sign',90)],[row('mobile',75,dirs=(180,))],
@@ -74,9 +110,9 @@ class Tracking(unittest.TestCase):
       m=Matcher([sign,point])
       for t,d in enumerate((-25,-8)):
         m.fix(t,sign[0],sign[1]+direction*d/k,12,90 if east else 270,4,5)
-      self.assertEqual(m.hud_kind,'sign_camera')
+      self.assertEqual((m.hud_kind,m.sound_family),('fixed','fixed'))
 
-  def test_bend_upgrades_only_when_remaining_zone_reaches_camera(self):
+  def test_bend_hands_over_when_enforcement_itself_is_in_range(self):
     for distance,expected in [(145,'fixed'),(425,'sign')]:
       course=30; rad=math.radians(course)
       m=Matcher([row('sign',0),row('mobile',25+distance*math.cos(rad),distance*math.sin(rad),dirs=(course,))])
@@ -140,7 +176,7 @@ class Tracking(unittest.TestCase):
   def test_hud_handles_highway_distance_and_after_sign(self):
     hud=object.__new__(Hud)
     for kind,meters,label in [('fixed',int(CAMERA_BEFORE['freeway']),f"約 {int(CAMERA_BEFORE['freeway'])} m"),
-                              ('sign',-100,'路段剩 200 m'),('sign_camera',-100,'路段剩 200 m')]:
+                              ('sign',-100,'路段剩 200 m')]:
       hud.sock=Mock();hud.event=None
       hud.sock.recv.side_effect=[PACKET.pack(10.,KINDS.index(kind),0,meters),BlockingIOError()]
       self.assertEqual(hud.text(10.,10.,True)[1],label)
@@ -283,21 +319,37 @@ class Audio(unittest.TestCase):
     self.assertEqual(set(self.v.samples),{'sign','fixed'})
     self.assertEqual(len(set(v.tobytes()[:8000] for v in self.v.samples.values())),2)
 
-  def test_soundd_feed_continues_same_wave_between_camera_and_paired_sign(self):
+  def test_soundd_feed_continues_point_wave_across_sign_until_point_exit(self):
     for kind in ('fixed','mobile'):
       self.v.revoke()
       self.v.matcher=Matcher([row(kind,90),row('sign',30)])
       self.update(0,0);self.update(1,10)
       gen=self.v.request[1]
       self.v.render(np.zeros(512),True,1.1)
-      self.update(2,20)  # sign now owns the HUD, but must not replay from frame zero
-      self.assertEqual((self.v.matcher.hud_kind,self.v.request[1]),('sign_camera',gen))
+      self.update(2,20)  # sign window opens, but HUD and audio stay with the point
+      self.assertEqual((self.v.matcher.hud_kind,self.v.request[1]),(kind,gen))
       self.v.render(np.zeros(512),True,2.1);self.assertEqual(self.v.cursor,1024)
       self.assertIs(self.v.request[2],self.v.samples['fixed'])
+      for t,y in enumerate(range(30,101,10),3):
+        self.update(t,y)
+      self.assertIsNone(self.v.request)  # no sign bell left for the same approach
     self.v.revoke()
     self.v.matcher=Matcher([row('sign',20)])
     self.update(0,0);self.update(1,10)
     self.assertIs(self.v.request[2],self.v.samples['sign'])
+
+  def test_point_immediately_interrupts_fallback_audio_and_updates_hud(self):
+    self.v.matcher=Matcher([row('sign',0),row('fixed',400)])
+    for t,y in enumerate(range(-20,100,10)):
+      self.update(t,y)
+    gen=self.v.request[1]
+    self.assertIs(self.v.request[2],self.v.samples['sign'])
+    self.update(12,100)
+    self.assertEqual(self.v.request[1],gen+1)
+    self.assertEqual(self.v.matcher.hud_kind,'fixed')
+    self.assertIs(self.v.request[2],self.v.samples['fixed'])
+    out=np.zeros(2048);self.v.render(out,True,12.1)
+    np.testing.assert_array_equal(out,self.v.samples['fixed'][:2048])
 
 
 if __name__=='__main__':
