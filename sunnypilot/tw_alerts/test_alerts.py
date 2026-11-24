@@ -4,13 +4,15 @@ import math
 import unittest
 from collections import Counter
 from types import SimpleNamespace as NS
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
 from .audio import GAP, GPS_SERVICES, ROOT, Chimes, gps_input
 from .build_chimes import PATTERNS, chime
-from .matcher import FAMILY, Matcher
+from .matcher import CAMERA_BEFORE, FAMILY, Matcher
+from .build_points import camera_road
+from .hud import Hud, KINDS, PACKET
 
 
 def row(kind, distance, lateral=0, dirs=(0,)):
@@ -23,7 +25,7 @@ def fix(m,t,y,x=0,speed=10,course=0,acc=4):
 
 class Tracking(unittest.TestCase):
   def test_pass_boundary_and_no_replay(self):
-    for kind in FAMILY:
+    for kind in set(FAMILY)-{'sign'}:
       with self.subTest(kind=kind):
         m=Matcher([row(kind,50)])
         self.assertIsNone(fix(m,0,0))
@@ -37,17 +39,68 @@ class Tracking(unittest.TestCase):
     fix(m,0,0)
     self.assertEqual(fix(m,1,10).kind,'mobile')
     for i in range(2,6):self.assertEqual(fix(m,i,i*10).kind,'mobile')
-    self.assertEqual(fix(m,6,60).kind,'fixed')  # sign at the car is no longer ahead
-    m=Matcher([row('section',90),row('sign',130),row('mobile',165)])
+    self.assertEqual(fix(m,6,60).kind,'sign')  # crossed sign is still tracked under mobile
+    m=Matcher([row('section',280),row('sign',20),row('mobile',335)])
     fix(m,0,0);self.assertEqual(fix(m,1,10).kind,'sign')
-    for i in range(2,4):active=fix(m,i,i*10)
-    self.assertEqual(active.kind,'mobile')  # preempts the sign
+    for i in range(2,5):active=fix(m,i,i*10)
+    self.assertEqual(active.kind,'mobile')
 
   def test_separate_encounters(self):
-    m=Matcher([row('mobile',35),row('sign',80),row('fixed',135)])
-    kinds=[(s.kind if (s:=fix(m,i,i*10)) else None) for i in range(17)]
+    m=Matcher([row('mobile',35),row('sign',55),row('fixed',420)])
+    kinds=[(s.kind if (s:=fix(m,i,i*10)) else None) for i in range(46)]
     self.assertEqual([v for i,v in enumerate(kinds) if i==0 or v!=kinds[i-1]],
                      [None,'mobile','sign','fixed',None])
+
+  def test_sign_window_and_low_rate_crossing(self):
+    for path in ((-22,-10.1,-10,0,20), (-42,-18,8,32)):
+      m=Matcher([row('sign',0)])
+      for t,y in enumerate(path):
+        target=fix(m,t,y,speed=25)
+        self.assertEqual(target is not None, y >= -10)
+      t=len(path)
+      for y in [*range(55,285,20),299.9,300,310]:
+        target=fix(m,t,y,speed=25);t+=1
+        self.assertEqual(target is not None, y < 300)
+    for loc,heading in ((-100,0),(0,180)):
+      m=Matcher([row('sign',loc,dirs=(heading,))])
+      for t,y in enumerate((-20,-9,5,20)):
+        self.assertIsNone(fix(m,t,y))
+
+  def test_sign_follows_gentle_bend_and_pauses_when_stopped(self):
+    m=Matcher([row('sign',0)])
+    for t,y in enumerate((-20,-8,0)):
+      fix(m,t,y)
+    origin=m.distance; self.assertIsNotNone(fix(m,3,1,speed=0));self.assertEqual(m.distance,origin)
+    x,y=0,1
+    for n in range(1,16):
+      course=min(70,n*5);step=20 if n<15 else 20.2
+      x+=step*math.sin(math.radians(course));y+=step*math.cos(math.radians(course))
+      s=fix(m,n+3,y,x,speed=20,course=course)
+      self.assertEqual(s is not None,n<15)
+
+  def test_camera_window_depends_on_road_not_car_speed(self):
+    for kind in ('mobile','fixed'):
+      for road,distance in CAMERA_BEFORE.items():
+        for speed in (5,28):
+          m=Matcher([row(kind,distance)+[road]])
+          fix(m,0,-20,speed=speed)
+          self.assertIsNone(fix(m,1,-.1,speed=speed))
+          self.assertEqual(fix(m,2,0,speed=speed).kind,kind)
+
+  def test_hud_handles_highway_distance_and_after_sign(self):
+    hud=object.__new__(Hud)
+    for kind,meters,label in [('fixed',int(CAMERA_BEFORE['freeway']),f"約 {int(CAMERA_BEFORE['freeway'])} m"),
+                              ('sign',-100,'路段剩 200 m')]:
+      hud.sock=Mock();hud.event=None
+      hud.sock.recv.side_effect=[PACKET.pack(10.,KINDS.index(kind),0,meters),BlockingIOError()]
+      self.assertEqual(hud.text(10.,10.,True)[1],label)
+
+  def test_mainline_classification_excludes_ambiguity(self):
+    for name,expected in [('國道一號北向83.4公里','freeway'),('國道三甲西向3.4公里','express'),
+                          ('台74線35公里處','express'),('台61線70公里',None),('台74甲線3.4公里',None),
+                          ('國道四號清水端與臨港路585巷口',None),('台61線29公里橋下',None),
+                          ('中豐路與台68線路口',None),('中央路段速限90',None)]:
+      self.assertEqual(camera_road(name),expected,name)
 
   def test_irrelevant_points_and_turnoff(self):
     for r in [row('sign',100,90),row('fixed',-20),row('mobile',50,dirs=(180,))]:

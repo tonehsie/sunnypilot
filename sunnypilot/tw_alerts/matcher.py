@@ -5,7 +5,10 @@ from typing import NamedTuple
 
 FAMILY = {"mobile": "mobile", "sign": "sign", **dict.fromkeys(("fixed", "section", "combined", "red", "tech", "listed"), "fixed")}
 RANK = {"mobile": 0, "sign": 1, "fixed": 2}
-PASS_M = 10.
+CAMERA_BEFORE = {"ordinary": 300., "express": 600., "freeway": 800.}
+CAMERA_AFTER = 10.
+SIGN_BEFORE, SIGN_AFTER = 10., 300.
+EPS = 1e-6
 
 
 class Site(NamedTuple):
@@ -14,6 +17,7 @@ class Site(NamedTuple):
   kind: str
   headings: tuple
   limit: int
+  road: str
 
 
 def offset(lat, lon, a, b):
@@ -33,16 +37,21 @@ def relative(lat, lon, site, course):
 class Matcher:
   def __init__(self, rows):
     self.grid = defaultdict(list)
-    for a, b, kind, dirs, limit, _ in rows:
+    for a, b, kind, dirs, limit, _, *road in rows:
       if kind not in FAMILY or not (20 <= a <= 27 and 117 <= b <= 124):
         raise ValueError("invalid point")
-      site = Site(a, b, kind, tuple(dirs), limit)
+      road_class = road[0] if road else "ordinary"
+      if road_class not in CAMERA_BEFORE:
+        raise ValueError("invalid road class")
+      site = Site(a, b, kind, tuple(dirs), limit, road_class)
       self.grid[int(a*100), int(b*100)].append(site)
     self.passed = {}
     self.reset()
 
   def reset(self):
     self.active = None
+    self.encounters = {}  # independent timers/distances, even for temporarily suppressed bells
+    self.trusted_course = None
     self.course = 0.
     self.distance = 0.
     self.last = self.origin = None
@@ -63,48 +72,75 @@ class Matcher:
     if math.hypot(*offset(old[1], old[2], lat, lon)) > speed*(now-old[0])*2 + max(15, accuracy):
       self.reset()
       return None
-    dx, dy = offset(self.origin[1], self.origin[2], lat, lon)
+    origin = self.origin
+    dx, dy = offset(origin[1], origin[2], lat, lon)
     # Unknown modem precision is not a perfect fix. Require actual displacement
     # corroborating the modem's course before acquiring a point.
     progress = math.hypot(dx, dy) >= (12. if modem_track else max(3, accuracy*.6))
     if progress:
       self.origin = self.last
       if moving and angle(math.degrees(math.atan2(dx,dy)), bearing) > 45:
-        self.active = None
+        self.reset()
         return None
+      if moving:
+        self.trusted_course = bearing
 
     self.passed = {site:p for site,p in self.passed.items() if now-p[0] < 90}
-    if self.active is not None:
-      # Keep one approach axis near the point: GPS bearing can wander at the stop line.
-      ahead, side = relative(lat, lon, self.active, self.course)
-      if ahead <= -PASS_M + 1e-6:
-        self.passed[self.active] = (now, self.course)
-        self.active = None
-      elif side > 45 or (moving and angle(bearing, self.course) > 60):
-        self.active = None  # turned off the road
+    for site, (axis, dist) in list(self.encounters.items()):
+      is_sign = site.kind == "sign"
+      if is_sign and dist <= 0:
+        # Beyond a sign, integrate forward movement along the local road rather
+        # than a straight chord from the sign; stationary jitter isn't distance.
+        if moving and angle(bearing, axis) > 55:
+          del self.encounters[site]
+          continue
+        x, y = offset(old[1], old[2], lat, lon)
+        course = bearing if moving else axis
+        rad = math.radians(course)
+        if speed >= .5:
+          dist -= x*math.sin(rad) + y*math.cos(rad)
+        axis = course
       else:
-        self.distance = ahead
-    if not moving or not progress:
-      return self.active
-    # Existing target stays latched through zero; only a higher-priority candidate
-    # may interrupt it. Equal-priority candidates are nearest first on acquisition.
-    best = None
-    reach = max(110., min(480., speed*14))
-    for i in range(int(lat*100)-1, int(lat*100)+2):
-      for j in range(int(lon*100)-1, int(lon*100)+2):
-        for site in self.grid.get((i,j), ()):
-          rank = RANK[FAMILY[site.kind]]
-          if self.active is not None and rank >= RANK[FAMILY[self.active.kind]]:
-            continue
-          if site in self.passed and angle(self.passed[site][1],bearing) < 75:
-            continue
-          if site.headings and all(angle(bearing,h)>55 for h in site.headings):
-            continue
-          ahead, side = relative(lat,lon,site,bearing)
-          if 5 <= ahead <= reach and side <= (26 if site.headings else 15):
-            key = (rank, ahead, side)
-            if best is None or key < best[0]:
-              best = (key, site)
-    if best:
-      self.active, self.distance, self.course = best[1], best[0][1], bearing
+        dist, side = relative(lat, lon, site, axis)
+        if side > 45 or (moving and angle(bearing,axis) > 60):
+          del self.encounters[site]
+          continue
+      if dist <= -(SIGN_AFTER if is_sign else CAMERA_AFTER) + EPS:
+        self.passed[site] = (now, axis)
+        del self.encounters[site]
+      else:
+        self.encounters[site] = (axis, dist)
+
+    # Once course is corroborated, check every fresh moving fix, not just
+    # every 12 m: the entire pre-sign window can lie between two 1 Hz fixes.
+    if moving and self.trusted_course is not None and angle(bearing,self.trusted_course) <= 45:
+      radius = max(CAMERA_BEFORE.values()) + 45
+      dlat = radius/111320
+      dlon = dlat/math.cos(math.radians(lat))
+      for i in range(int((lat-dlat)*100), int((lat+dlat)*100)+1):
+        for j in range(int((lon-dlon)*100), int((lon+dlon)*100)+1):
+          for site in self.grid.get((i,j), ()):
+            if site in self.encounters or (site in self.passed and angle(self.passed[site][1],bearing) < 75):
+              continue
+            if site.headings and all(angle(bearing,h)>55 for h in site.headings):
+              continue
+            ahead, side = relative(lat,lon,site,bearing)
+            width = 26 if site.headings else 15
+            if side > width:
+              continue
+            if site.kind == "sign":
+              if ahead > SIGN_BEFORE + EPS:
+                continue
+              if ahead < 0:
+                prev, prev_side = relative(old[1],old[2],site,bearing)
+                if prev < 0 or prev_side > width or ahead <= -SIGN_AFTER + EPS:
+                  continue  # no observed crossing; don't arm a sign already behind us
+            elif not 0 <= ahead <= CAMERA_BEFORE[site.road] + EPS:
+              continue
+            self.encounters[site] = (bearing, ahead)
+    # Keep the current point among equal ranks. Silenced encounters still advance.
+    self.active = min(self.encounters, key=lambda s:(RANK[FAMILY[s.kind]], s != self.active,
+                      abs(self.encounters[s][1])), default=None)
+    if self.active is not None:
+      self.course, self.distance = self.encounters[self.active]
     return self.active

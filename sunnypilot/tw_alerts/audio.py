@@ -103,7 +103,7 @@ class Chimes:
     self.request = (site, self.generation, self.samples[FAMILY[site.kind]], sm.recv_time[service]+FRESH)
     if changed or now-self.last_hud >= .4:
       self.last_hud = now
-      notify(site.kind, site.limit, max(0., self.matcher.distance), now)
+      notify(site.kind, site.limit, self.matcher.distance, now)
 
   def render(self, out, allowed, now):
     req = self.request

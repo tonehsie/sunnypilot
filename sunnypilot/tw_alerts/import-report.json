@@ -1,11 +1,14 @@
 {
   "126156-1.csv": {
     "input": 14,
-    "points": 25
+    "points": 25,
+    "express": 6
   },
   "13940-1.zip": {
     "input": 177,
+    "freeway": 172,
     "points": 177,
+    "express": 2,
     "reviewed_reference": 1
   },
   "169929-1.csv": {
@@ -18,36 +21,45 @@
     "reviewed_reference": 275,
     "points": 277,
     "excluded": 109,
-    "same_address_reference": 2
+    "same_address_reference": 2,
+    "express": 1
   },
   "172174-1.csv": {
     "input": 89,
-    "points": 89
+    "points": 89,
+    "express": 6
   },
   "172725-1.csv": {
     "input": 3,
-    "points": 3
+    "points": 3,
+    "express": 2
   },
   "173211-1.csv": {
     "input": 62,
-    "points": 62
+    "points": 62,
+    "express": 3
   },
   "178168-1.csv": {
     "input": 145,
-    "points": 145
+    "points": 145,
+    "express": 2
   },
   "25935-1.csv": {
     "input": 118,
-    "points": 118
+    "points": 118,
+    "express": 3
   },
   "7320-1.csv": {
     "input": 1910,
     "embedded_header": 1,
-    "points": 1909
+    "points": 1909,
+    "express": 79,
+    "freeway": 165
   },
   "83881-1.csv": {
     "input": 225,
-    "points": 225
+    "points": 225,
+    "express": 9
   },
   "83881-2.csv": {
     "duplicate_file": true

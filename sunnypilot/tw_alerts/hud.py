@@ -4,19 +4,20 @@ import os
 import socket
 import struct
 import time
+from .matcher import CAMERA_BEFORE, SIGN_AFTER
 
 LABELS = {"sign":"警52 測速取締路段","fixed":"固定測速","mobile":"移動測速路段","section":"區間測速",
           "combined":"測速及闖紅燈","red":"闖紅燈照相","tech":"科技執法","listed":"執法提醒"}
 KINDS = tuple(LABELS)
-PACKET = struct.Struct("!dBBH")
-ADDRESS = "\0sp-tw-road-v1-" + str(os.getuid())
+PACKET = struct.Struct("!dBBh")  # signed: negative is past the reference point
+ADDRESS = "\0sp-tw-road-v2-" + str(os.getuid())
 
 
 def notify(kind, limit, meters, now):
   try:
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
       s.setblocking(False)
-      s.sendto(PACKET.pack(now,255 if kind is None else KINDS.index(kind),limit,min(65535,round(meters))), ADDRESS)
+      s.sendto(PACKET.pack(now,255 if kind is None else KINDS.index(kind),limit,max(-32768,min(32767,round(meters)))), ADDRESS)
   except OSError:
     pass
 
@@ -43,7 +44,7 @@ class Hud:
         if math.isfinite(t) and 0<=now-t<.7:
           if k==255:
             self.event=None
-          elif k<len(KINDS) and lim<=120 and m<=500:
+          elif k<len(KINDS) and lim<=120 and -SIGN_AFTER<=m<=max(CAMERA_BEFORE.values()):
             self.event=(t,k,lim,m)
     if not permitted:
       self.event=None
@@ -53,5 +54,9 @@ class Hud:
     if not 0<=now-t<3 or not math.isfinite(speed):
       self.event=None
       return None
-    dist=max(0,m-max(0,speed)*(now-t))
-    return LABELS[KINDS[k]], f"約 {round(dist/10)*10} m" + (f"  ·  {lim} km/h" if lim else "")
+    dist=m-max(0,speed)*(now-t)
+    if KINDS[k]=="sign" and dist<=0:
+      detail=f"路段剩 {round(max(0,SIGN_AFTER+dist)/10)*10} m"
+    else:
+      detail=f"約 {round(max(0,dist)/10)*10} m"
+    return LABELS[KINDS[k]], detail + (f"  ·  {lim} km/h" if lim else "")

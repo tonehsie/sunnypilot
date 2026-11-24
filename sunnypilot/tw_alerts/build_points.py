@@ -7,12 +7,39 @@ import json
 import math
 import re
 import sys
+import unicodedata
 import zipfile
 from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 COMPASS = {"北": 0, "東北": 45, "東": 90, "東南": 135, "南": 180, "西南": 225, "西": 270, "西北": 315}
+
+
+def camera_road(address):
+  """Classify the installation, not the vehicle's speed or a nearby intersecting highway."""
+  s = unicodedata.normalize("NFKC", address).replace("臺", "台").replace(" ", "")
+  if re.search(r"橋下|橋底|高架下|下方|平面|[側辅輔]車?道|側\)|慢車道|匝道|交流道口|路口|街口|巷口|與|和.{0,10}交叉", s):
+    return None
+  km = re.search(r"(\d+(?:\.\d+)?)\s*(?:公里|[Kk])", s)
+  if re.search(r"國道(?:三(?:號)?甲|3(?:號)?甲)", s):
+    return "express"
+  if km and re.search(r"國道[一二三四五六八十\d]+(?:號)?|中山高速公路|福爾摩沙高速公路", s):
+    return "freeway"
+  if re.search(r"高速公路", s) and km:
+    return "freeway"
+  if km and re.search(r"快速(?:公路|道路)", s):
+    return "express"
+  route = re.search(r"台(\d+)([甲乙丙丁戊己庚辛]?)", s)
+  if km and route:
+    num = route[1]+route[2]
+    if num == "61":
+      k = float(km[1])
+      if 2.606 <= k < 66.082 or 76 <= k <= 305.75:
+        return "express"
+    elif num in {"62","62甲","64","65","66","68","68甲","72","74","76","78","82","84","86","88"}:
+      return "express"
+  return None
 
 
 def directions(s):
@@ -172,7 +199,10 @@ def build(folder):
         skipped.append([p.name, line, addr, "缺少或無法驗證座標"])
         continue
       for a, b in coords:
-        rows.append([round(a, 7), round(b, 7), kind, heading, limit, src])
+        road = camera_road(addr) if kind != "sign" else None
+        rows.append([round(a, 7), round(b, 7), kind, heading, limit, src] + ([road] if road else []))
+        if road:
+          counts[road] += 1
         counts["points"] += 1
     audit[p.name] = dict(counts)
   if applied != set(reviewed):
