@@ -179,8 +179,12 @@ def build(folder):
 
 
 if __name__ == "__main__":
+  if len(sys.argv) != 3 or Path(sys.argv[2]).resolve() == ROOT.resolve():
+    raise SystemExit("Historical CSV build: build_points.py <raw folder> <separate output folder>. "
+                     "For the current car index use: python3 -m sunnypilot.tw_alerts.import_workbook <xlsx>")
+  out = Path(sys.argv[2])
   rows, audit, skipped = build(Path(sys.argv[1]))
-  (ROOT / "points.json").write_text(json.dumps(rows, separators=(",", ":")), encoding="utf-8")
-  (ROOT / "import-report.json").write_text(json.dumps(audit, indent=2), encoding="utf-8")
-  (ROOT / "pending.json").write_text(json.dumps(skipped, ensure_ascii=False, indent=1), encoding="utf-8")
+  (out / "points.json").write_text(json.dumps(rows, separators=(",", ":")), encoding="utf-8")
+  (out / "import-report.json").write_text(json.dumps(audit, indent=2), encoding="utf-8")
+  (out / "pending.json").write_text(json.dumps(skipped, ensure_ascii=False, indent=1), encoding="utf-8")
   print(len(rows), "points;", len(skipped), "unlocated rows;", Counter(r[2] for r in rows))

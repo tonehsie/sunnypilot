@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import json
 import math
 import unittest
@@ -13,6 +14,7 @@ from .build_chimes import PATTERNS, chime
 from .matcher import CAMERA_BEFORE, ENFORCEMENT, FAMILY, Matcher
 from .build_points import camera_road
 from .review_signs import corroborated
+from .import_workbook import compile_rows
 from .hud import Hud, KINDS, PACKET
 
 
@@ -208,6 +210,18 @@ class Tracking(unittest.TestCase):
 
 
 class SignReview(unittest.TestCase):
+  def test_merged_workbook_policy(self):
+    row={"新序號":1,"類型":"警52預告標誌","校正優先級":"OK_正常","heading_deg":0,"heading2_deg":180,
+         "緯度":24.1,"經度":121.2,"速限":None,"資料集編號":"公路局警52","點位識別碼":"S1","地址或里程":"台1"}
+    point,excluded=compile_rows([row])
+    self.assertEqual((point[0][3],excluded),([0,180],[]))
+    variants=[dict(row,新序號=2,校正優先級="P1_座標嚴重異常"),dict(row,新序號=3,校正優先級="P3_雙向軸向未知",heading_deg=None,heading2_deg=None)]
+    p,e=compile_rows([row,*variants])
+    self.assertEqual(([x[3] for x in p],len(e)),([[0,180],[]],1))
+    for changes in ({"heading_deg":360},{"heading2_deg":35},{"緯度":0},{"heading_deg":None},{"校正優先級":"P2_無法推算方向"}):
+      with self.subTest(changes=changes),self.assertRaises(ValueError):
+        compile_rows([dict(row,**changes)])
+
   def test_independent_mileposts_and_direction(self):
     sign={'公路編碼':'X','起點樁號':'0K+500','坐標-N-WGS84':'24','坐標-E-WGS84':'121',
           '牌面方向':'順向','校正優先級':'OK_正常','heading_deg':'359'}
@@ -336,7 +350,13 @@ class Audio(unittest.TestCase):
     signs=aud['169929-1.csv']
     self.assertEqual((signs['input'],signs['suspect_coord'],signs['duplicate'],signs['estimated_heading']),(2617,8,41,1469))
     self.assertFalse(any(r[:3]==[24.8786595,121.2093362,'sign'] for r in pts))
-    self.assertEqual(sum(r[2]=='sign' and len(r[3])>0 for r in pts),1469)
+    review=json.loads((ROOT/'workbook-report.json').read_text())
+    self.assertEqual(review['points_sha256'],hashlib.sha256((ROOT/'points.json').read_bytes()).hexdigest())
+    self.assertEqual((review['input'],review['active'],len(review['quarantined'])),(5606,len(pts),8))
+    self.assertEqual(Counter(x[2] for x in pts),review['by_kind'])
+    self.assertEqual(Counter(str(len(x[3])) for x in pts),review['direction_counts'])
+    self.assertEqual(sum(r[2]=='sign' and len(r[3])>0 for r in pts),2563)
+    self.assertEqual(sum(bool(r[3]) for r in pts if r[2]!='sign'),2567)
     self.assertEqual(sum(x[2]=='mobile' for x in pts),277)
     self.assertEqual(set(self.v.samples),{'sign','fixed'})
     self.assertEqual(len(set(v.tobytes()[:8000] for v in self.v.samples.values())),2)
