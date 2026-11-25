@@ -1,10 +1,8 @@
 """Build an offline index from the archived government dataset files. No geocoding."""
 import csv
-import bisect
 import hashlib
 import io
 import json
-import math
 import re
 import sys
 import unicodedata
@@ -67,46 +65,6 @@ def read_rows(p):
   return csv.DictReader(io.StringIO(text.lstrip("\ufeff"), newline=""))
 
 
-def sign_bearings(records):
-  """Estimate mileage tangent ONLY with a nearby marker on both sides on the same straight road."""
-  by_road = {}
-  for r in records:
-    m = re.fullmatch(r"(\d+)K\+(\d{1,3})", r["起點樁號"].strip(), re.I)
-    if not m:
-      continue
-    try:
-      entry = (int(m[1])*1000+int(m[2]),float(r["坐標-N-WGS84"]),float(r["坐標-E-WGS84"]),r)
-    except ValueError:
-      continue
-    by_road.setdefault(r["公路編碼"],[]).append(entry)
-  degrees = {}
-  for road, group in by_road.items():
-    if not road:
-      continue
-    group.sort(key=lambda x:x[0])
-    marks = [p[0] for p in group]
-    for marker, lat, lon, r in group:
-      direction = r["牌面方向"].strip()
-      if direction not in ("順向","逆向"):
-        continue
-      lo, hi = bisect.bisect_right(marks,marker-30)-1, bisect.bisect_left(marks,marker+30)
-      if lo < 0 or hi == len(group):
-        continue
-      bearings = []
-      for ii, flip in ((lo,-1),(hi,1)):
-        km, a, b, _ = group[ii]
-        step = abs(km-marker)
-        dx = (b-lon)*111320*math.cos(math.radians(lat))*flip
-        dy = (a-lat)*111320*flip
-        if step <= 450 and .93*step <= math.hypot(dx,dy) <= 1.07*step:
-          bearings.append(math.degrees(math.atan2(dx,dy)))
-      if len(bearings) == 2:
-        turn = (bearings[1]-bearings[0]+180)%360-180
-        if abs(turn) <= 18:
-          degrees[id(r)] = [round(bearings[0]+turn/2 + (180 if direction=="逆向" else 0))%360]
-  return degrees
-
-
 def build(folder):
   rows, skipped, seen_files, audit = [], [], set(), {}
   reviewed = json.loads((ROOT/"location_refs.json").read_text())
@@ -143,9 +101,17 @@ def build(folder):
     seen_files.add(digest)
     counts = Counter()
     records = list(read_rows(p))
-    sign_dirs = sign_bearings(records) if src == "169929" else {}
+    if src == "169929":
+      signs = json.loads((ROOT/"sign_review.json").read_text())
+      if signs["source_sha256"] != digest:
+        raise ValueError("Sign source changed; rebuild the row-keyed sign review")
     for line, r in enumerate(records, 2):
       counts["input"] += 1
+      if src == "169929" and (reason := signs["skip"].get(str(line))):
+        counts[reason] += 1
+        if reason == "suspect_coord":
+          skipped.append([p.name, line, r["公路編號"]+" "+r["起點樁號"], "警52座標異常，待查"])
+        continue
       def get(*keys):
         return next((str(r[k]).strip() for k in keys if r.get(k)), "")
       item = get("取締項目", '取締項目(以"、"分隔)', "item")
@@ -160,7 +126,9 @@ def build(folder):
               "section" if src in ("126156", "172725") or "區間" in desc else
               "combined" if red and speed else "red" if red else "fixed" if speed else
               "listed" if src == "7320" else "tech")
-      heading = sign_dirs.get(id(r)) or directions(get("拍攝方向", "取締行向", "direct"))
+      heading = directions(get("拍攝方向", "取締行向", "direct"))
+      if src == "169929" and str(line) in signs["headings"]:
+        heading = [signs["headings"][str(line)]]
       if src == "169929" and heading:
         counts["estimated_heading"] += 1
       # The national table has no enforcement-type column; do not assume every entry is speed-only.

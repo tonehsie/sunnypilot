@@ -12,6 +12,7 @@ from .audio import GAP, GPS_SERVICES, ROOT, Chimes, gps_input
 from .build_chimes import PATTERNS, chime
 from .matcher import CAMERA_BEFORE, ENFORCEMENT, FAMILY, Matcher
 from .build_points import camera_road
+from .review_signs import corroborated
 from .hud import Hud, KINDS, PACKET
 
 
@@ -206,6 +207,21 @@ class Tracking(unittest.TestCase):
     self.assertIsNone(fix(m,9,400))
 
 
+class SignReview(unittest.TestCase):
+  def test_independent_mileposts_and_direction(self):
+    sign={'公路編碼':'X','起點樁號':'0K+500','坐標-N-WGS84':'24','坐標-E-WGS84':'121',
+          '牌面方向':'順向','校正優先級':'OK_正常','heading_deg':'359'}
+    sites={0:{(24-500/111320,121)},1000:{(24+500/111320,121)}}
+    roads={'X':([0,1000],sites)}
+    self.assertEqual(corroborated(sign,roads),359)
+    for key,val in [('牌面方向','逆向'),('坐標-E-WGS84','120.99'),('heading_deg','38'),
+                    ('校正優先級','P1_跳點'),('公路編碼','Y'),('起點樁號','9K+123')]:
+      self.assertIsNone(corroborated({**sign,key:val},roads))
+    self.assertEqual(corroborated({**sign,'牌面方向':'逆向','heading_deg':'180'},roads),180)
+    sites[0].add((24,120.99))  # ambiguous/displaced reference on one side
+    self.assertIsNone(corroborated(sign,roads))
+
+
 class Audio(unittest.TestCase):
   def setUp(self):
     self.v=Chimes()
@@ -292,6 +308,8 @@ class Audio(unittest.TestCase):
       # Regenerate from pure notes and compare the entire shipped clip, not its prefix.
       pcm=chime(*spec)
       np.testing.assert_allclose(self.v.samples[family]*32768, pcm, rtol=0, atol=1)
+      self.assertEqual(abs(pcm.astype(np.int32)).max(),21900)
+      self.assertLess(abs(self.v.samples[family]).max()+.2,1.)  # full-scale optional overspeed mix
       self.assertLess(len(pcm),48000)
 
   def test_actual_mixer_keeps_native_alarm_and_quiet_mode(self):
@@ -311,13 +329,58 @@ class Audio(unittest.TestCase):
 
   def test_assets_and_snapshot(self):
     pts=json.loads((ROOT/'points.json').read_text());aud=json.loads((ROOT/'import-report.json').read_text())
-    self.assertEqual(len(pts),5647);self.assertEqual(sum(x.get('points',0) for x in aud.values()),len(pts))
+    self.assertEqual(len(pts),5598);self.assertEqual(sum(x.get('points',0) for x in aud.values()),len(pts))
     self.assertEqual(sum(x.get('reviewed_reference',0) for x in aud.values()),276)
-    self.assertEqual(len(json.loads((ROOT/'pending.json').read_text())),109)
-    self.assertEqual(Counter(FAMILY[x[2]] for x in pts),{'sign':2617,'fixed':3030})
+    self.assertEqual(len(json.loads((ROOT/'pending.json').read_text())),117)
+    self.assertEqual(Counter(FAMILY[x[2]] for x in pts),{'sign':2568,'fixed':3030})
+    signs=aud['169929-1.csv']
+    self.assertEqual((signs['input'],signs['suspect_coord'],signs['duplicate'],signs['estimated_heading']),(2617,8,41,1469))
+    self.assertFalse(any(r[:3]==[24.8786595,121.2093362,'sign'] for r in pts))
+    self.assertEqual(sum(r[2]=='sign' and len(r[3])>0 for r in pts),1469)
     self.assertEqual(sum(x[2]=='mobile' for x in pts),277)
     self.assertEqual(set(self.v.samples),{'sign','fixed'})
     self.assertEqual(len(set(v.tobytes()[:8000] for v in self.v.samples.values())),2)
+
+  def test_native_preemption_and_release_using_soundd(self):
+    methods={'update_tw_chimes','get_sound_data','update_alert'}
+    tree=ast.parse((ROOT.parents[1]/'selfdrive/ui/soundd.py').read_text())
+    t=0.
+    ctx=dict(np=np,time=NS(monotonic_ns=lambda:int(t*1e9),monotonic=lambda:t),
+             AudibleAlert=NS(none=0,warningImmediate=9),AudibleAlertSP=NS(promptSingleLow=3),
+             sound_list={2:('native',1,1)})
+    exec(compile(ast.Module([f for f in ast.walk(tree) if isinstance(f,ast.FunctionDef) and f.name in methods],[]),
+                 '<soundd>','exec'),ctx)
+    frame=4096
+    obj=NS(current_alert=0,should_play_sound=bool,current_sound_frame=0,current_volume=1.,
+           loaded_sounds={2:np.full(frame,.73)},_sign_frame=0,_sign_until_ns=0,enabled=False,_tw_voice=self.v)
+    state=NS(alive={'selfdriveState':True},valid={'selfdriveState':True})
+    self.sm.update=lambda timeout:None
+    def tick(t2,y):
+      nonlocal t
+      t=t2; self.sm[self.ext].latitude=24+y/111320; self.sm.recv_time[self.ext]=t
+      with patch(__package__+'.audio.notify'):
+        ctx['update_tw_chimes'](obj,state,self.sm)
+    def render():return ctx['get_sound_data'](obj,frame)
+    def native():ctx['update_alert'](obj,2); np.testing.assert_allclose(render(),.73)
+    for kind,site in [('sign',20),('fixed',50)]:
+      with self.subTest(kind=kind):
+        self.v.revoke();self.v.matcher=Matcher([row(kind,site)])
+        tick(0,0);tick(1,10);clip=self.v.request[2]
+        np.testing.assert_array_equal(render(),clip[:frame])
+        native();tick(2,20);tick(3,30)
+        self.assertFalse(render().any())  # native one-shot finished, event not yet cleared
+        ctx['update_alert'](obj,0)
+        # No fresh fix since release: valid lease, sign is already behind the car.
+        np.testing.assert_array_equal(render(),clip[:frame])
+        native()
+        for i,y in enumerate(range(40,site+(300 if kind=='sign' else 10)+11,10),4):tick(i,y)
+        ctx['update_alert'](obj,0);self.assertFalse(render().any())
+    for disabled,valid in ((True,True),(False,False)):
+      self.v.revoke();self.v.matcher=Matcher([row('fixed',50)])
+      obj.enabled=False;state.valid['selfdriveState']=True
+      tick(0,0);tick(1,10);native()
+      obj.enabled=disabled;state.valid['selfdriveState']=valid;tick(2,20)
+      ctx['update_alert'](obj,0);self.assertIsNone(self.v.request);self.assertFalse(render().any())
 
   def test_soundd_feed_continues_point_wave_across_sign_until_point_exit(self):
     for kind in ('fixed','mobile'):

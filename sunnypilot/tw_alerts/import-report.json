@@ -13,8 +13,10 @@
   },
   "169929-1.csv": {
     "input": 2617,
-    "points": 2617,
-    "estimated_heading": 202
+    "points": 2568,
+    "estimated_heading": 1469,
+    "suspect_coord": 8,
+    "duplicate": 41
   },
   "170672-1.csv": {
     "input": 386,

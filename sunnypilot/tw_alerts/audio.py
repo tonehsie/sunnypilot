@@ -107,11 +107,15 @@ class Chimes:
       self.last_hud = now
       notify(self.matcher.hud_kind, site.limit, self.matcher.distance, now)
 
+  def pause(self):
+    # Audio callback only. Pausing a sound is not the end of a GPS encounter.
+    self.cursor = 0
+    self.playing = None
+
   def render(self, out, allowed, now):
     req = self.request
     if not allowed or req is None or now >= req[3]:
-      self.cursor = 0
-      self.playing = None
+      self.pause()
       return
     _, generation, clip, _ = req
     if generation != self.playing:

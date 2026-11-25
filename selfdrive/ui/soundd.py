@@ -160,9 +160,13 @@ class Soundd(QuietMode):
       voice_allowed = self.current_alert == AudibleAlert.none and not self.enabled
 
     voice = self._tw_voice
-    if voice is not None and voice_allowed:
+    if voice is not None:
       try:
-        voice.render(ret, True, time.monotonic())
+        if voice_allowed:
+          voice.render(ret, True, time.monotonic())
+        else:
+          # A native alert owns the entire buffer; never pass it to the optional mixer.
+          voice.pause()
       except Exception:
         # Optional audio must never abort the PortAudio callback; no logging/I/O here.
         self._tw_voice = None
@@ -175,7 +179,7 @@ class Soundd(QuietMode):
     data_out[:frames, 0] = self.get_sound_data(frames)
 
   def update_alert(self, new_alert):
-    current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame > len(self.loaded_sounds[self.current_alert])
+    current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame >= len(self.loaded_sounds[self.current_alert])
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       if new_alert == AudibleAlert.warningImmediate:
         self.ramp_start_volume = self.current_volume
@@ -193,6 +197,13 @@ class Soundd(QuietMode):
     elif self.selfdrive_timeout_alert:
       self.update_alert(AudibleAlert.none)
       self.selfdrive_timeout_alert = False
+
+  def update_tw_chimes(self, sm, tw_sm):
+    tw_sm.update(0)
+    # Only the audio callback pauses for native sounds. Track the current site
+    # throughout the interruption; Quiet Mode or invalid car state still revokes it.
+    permitted = sm.alive['selfdriveState'] and sm.valid['selfdriveState'] and not self.enabled
+    self._tw_voice.update(tw_sm, time.monotonic(), permitted)
 
   def calculate_volume(self, weighted_db):
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
@@ -247,10 +258,7 @@ class Soundd(QuietMode):
                                sm.alive['selfdriveState'] and sm.valid['selfdriveState'] else 0)
         if self._tw_voice is not None and tw_sm is not None:
           try:
-            tw_sm.update(0)
-            permitted = (sm.alive['selfdriveState'] and sm.valid['selfdriveState'] and not self.enabled
-                         and self.current_alert == AudibleAlert.none)
-            self._tw_voice.update(tw_sm, time.monotonic(), permitted)
+            self.update_tw_chimes(sm, tw_sm)
           except Exception:
             voice = self._tw_voice
             if voice is not None:

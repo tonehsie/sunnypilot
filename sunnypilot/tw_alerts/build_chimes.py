@@ -18,7 +18,8 @@ def chime(tones, step):
   for i, hz in enumerate(tones):
     phase = 2 * np.pi * hz * t
     out[i*start_step:i*start_step+len(t)] += env * (np.sin(phase) + .24*np.sin(2*phase) + .08*np.sin(3*phase))
-  return np.rint(out * (15500 / np.max(np.abs(out)))).astype("<i2")
+  # +3 dB from 15500. Leaves headroom even with the optional speed-limit chime.
+  return np.rint(out * (21900 / np.max(np.abs(out)))).astype("<i2")
 
 
 def main():
