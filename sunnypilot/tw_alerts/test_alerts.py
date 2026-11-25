@@ -343,21 +343,23 @@ class Audio(unittest.TestCase):
 
   def test_assets_and_snapshot(self):
     pts=json.loads((ROOT/'points.json').read_text());aud=json.loads((ROOT/'import-report.json').read_text())
-    self.assertEqual(len(pts),5598);self.assertEqual(sum(x.get('points',0) for x in aud.values()),len(pts))
+    self.assertEqual(len(pts),4958);self.assertEqual(sum(x.get('points',0) for x in aud.values()),5598)  # historic audit
     self.assertEqual(sum(x.get('reviewed_reference',0) for x in aud.values()),276)
     self.assertEqual(len(json.loads((ROOT/'pending.json').read_text())),117)
-    self.assertEqual(Counter(FAMILY[x[2]] for x in pts),{'sign':2568,'fixed':3030})
+    self.assertEqual(Counter(FAMILY[x[2]] for x in pts),{'sign':2468,'fixed':2490})
     signs=aud['169929-1.csv']
     self.assertEqual((signs['input'],signs['suspect_coord'],signs['duplicate'],signs['estimated_heading']),(2617,8,41,1469))
     self.assertFalse(any(r[:3]==[24.8786595,121.2093362,'sign'] for r in pts))
-    review=json.loads((ROOT/'workbook-report.json').read_text())
+    review=json.loads((ROOT/'csv-report.json').read_text())
     self.assertEqual(review['points_sha256'],hashlib.sha256((ROOT/'points.json').read_bytes()).hexdigest())
-    self.assertEqual((review['input'],review['active'],len(review['quarantined'])),(5606,len(pts),8))
+    self.assertEqual((review['input'],review['active'],review['exact_duplicates']),(4963,len(pts),3))
+    for conflict in review['limit_conflicts']:
+      self.assertIn(conflict['point'],pts);self.assertEqual(conflict['point'][4],0)
+    self.assertEqual(sum(len(v) for v in Matcher(pts).grid.values()),len(pts))
     self.assertEqual(Counter(x[2] for x in pts),review['by_kind'])
     self.assertEqual(Counter(str(len(x[3])) for x in pts),review['direction_counts'])
-    self.assertEqual(sum(r[2]=='sign' and len(r[3])>0 for r in pts),2563)
-    self.assertEqual(sum(bool(r[3]) for r in pts if r[2]!='sign'),2567)
-    self.assertEqual(sum(x[2]=='mobile' for x in pts),277)
+    self.assertEqual(sum(not x[3] for x in pts),231)
+    self.assertEqual(sum(x[2]=='mobile' for x in pts),275)
     self.assertEqual(set(self.v.samples),{'sign','fixed'})
     self.assertEqual(len(set(v.tobytes()[:8000] for v in self.v.samples.values())),2)
 

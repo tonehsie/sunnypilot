@@ -1,0 +1,57 @@
+{
+  "source": "測速照相與警52_精簡7欄完整資料.csv",
+  "source_sha256": "fd035900c5bd3127c3b8b86d462868578d3806e947ba8583550382ace32169b8",
+  "input": 4963,
+  "active": 4958,
+  "exact_duplicates": 3,
+  "limit_conflicts": [
+    {
+      "point": [
+        24.159496,
+        120.627369,
+        "mobile",
+        [
+          270
+        ],
+        0,
+        "170672"
+      ],
+      "input_limits": [
+        50,
+        60
+      ]
+    },
+    {
+      "point": [
+        24.245,
+        120.73102,
+        "fixed",
+        [
+          0
+        ],
+        0,
+        "83881"
+      ],
+      "input_limits": [
+        50,
+        60
+      ]
+    }
+  ],
+  "points_sha256": "d3013a23146ba095d2ff35428773b06cc172f2d262d5fb6860112c0a793d77c8",
+  "by_kind": {
+    "sign": 2468,
+    "listed": 1385,
+    "fixed": 521,
+    "mobile": 275,
+    "combined": 95,
+    "red": 137,
+    "section": 29,
+    "tech": 48
+  },
+  "direction_counts": {
+    "1": 4110,
+    "2": 617,
+    "0": 231
+  }
+}
