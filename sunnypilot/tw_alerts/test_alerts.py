@@ -387,7 +387,7 @@ class Audio(unittest.TestCase):
     for kind,site in [('sign',20),('fixed',50)]:
       with self.subTest(kind=kind):
         self.v.revoke();self.v.matcher=Matcher([row(kind,site)])
-        tick(0,0);tick(1,10);clip=self.v.request[2]
+        tick(0,0);tick(1,10);clip=self.v.request[2]*(.98/self.v.peak)
         np.testing.assert_array_equal(render(),clip[:frame])
         native();tick(2,20);tick(3,30)
         self.assertFalse(render().any())  # native one-shot finished, event not yet cleared
@@ -434,7 +434,19 @@ class Audio(unittest.TestCase):
     self.assertEqual(self.v.matcher.hud_kind,'fixed')
     self.assertIs(self.v.request[2],self.v.samples['fixed'])
     out=np.zeros(2048);self.v.render(out,True,12.1)
-    np.testing.assert_array_equal(out,self.v.samples['fixed'][:2048])
+    np.testing.assert_allclose(out,self.v.samples['fixed'][:2048]*(.78/self.v.peak),atol=1e-6)
+
+  def test_ten_db_and_headroom(self):
+    for clip in self.v.samples.values():
+      for vol in (0., .25, .45, .8, 1.):
+        for bg in (False, True):
+          self.v.pause()
+          self.v.request=(None,777,clip,5.)
+          out=np.full(clip.size,float(bg),dtype=np.float32)
+          self.v.render(out,True,1.,vol,bg)
+          self.assertLessEqual(float(np.max(np.abs(out*vol))),.980001)
+          if vol==.25:
+            np.testing.assert_allclose(out-float(bg)*.2,clip*(10**.5),atol=3e-7)
 
 
 if __name__=='__main__':

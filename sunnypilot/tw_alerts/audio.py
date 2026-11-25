@@ -12,6 +12,7 @@ from .matcher import FAMILY, Matcher
 ROOT = Path(__file__).resolve().parent
 RATE = 48000
 GAP = RATE * 3 // 4
+TW_GAIN = 10 ** (10 / 20)  # +10 dB relative to the previous road chimes
 FRESH = 2.
 GPS_SERVICES = ("gpsLocationExternal", "gpsLocation")
 
@@ -55,6 +56,7 @@ class Chimes:
         if len(clip) != f.getnframes():
           raise ValueError("truncated TW audio asset")
         self.samples[family] = clip
+    self.peak = max(1e-6, *(float(np.max(np.abs(c))) for c in self.samples.values()))
     self.request = None  # main thread publishes one immutable snapshot per fix
     self.generation = 0
     self.playing = None  # callback-owned cursor
@@ -112,12 +114,14 @@ class Chimes:
     self.cursor = 0
     self.playing = None
 
-  def render(self, out, allowed, now):
+  def render(self, out, allowed, now, volume=1., background=True):
     req = self.request
     if not allowed or req is None or now >= req[3]:
       self.pause()
       return
     _, generation, clip, _ = req
+    # Leave 2% output headroom; an overlapping optional speed chime retains 20%.
+    gain = min(TW_GAIN, (.98 / max(volume, 1e-6) - (.2 if background else 0.)) / self.peak)
     if generation != self.playing:
       self.cursor = 0
       self.playing = generation
@@ -127,7 +131,7 @@ class Chimes:
         n = min(len(out)-pos, len(clip)-self.cursor)
         buf = out[pos:pos+n]
         buf *= .2  # only silence / the optional speed-limit chime can reach this path
-        buf += clip[self.cursor:self.cursor+n]
+        buf += clip[self.cursor:self.cursor+n] * gain
       else:
         n = min(len(out)-pos, len(clip)+GAP-self.cursor)
       self.cursor = (self.cursor+n) % (len(clip)+GAP)

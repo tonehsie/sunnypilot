@@ -131,6 +131,7 @@ class Soundd(QuietMode):
     ret = np.zeros(frames, dtype=np.float32)
 
     voice_allowed = False
+    speed_chime = False
     if self.should_play_sound(self.current_alert):
       self._sign_frame = 0
       num_loops = sound_list[self.current_alert][1]
@@ -148,6 +149,7 @@ class Soundd(QuietMode):
         self.current_sound_frame += frames_to_write
     elif self.current_alert == AudibleAlert.none and not self.enabled and time.monotonic_ns() < self._sign_until_ns:
       voice_allowed = True  # mix only with our optional speed-limit reminder, never native alerts
+      speed_chime = True
       sample = self.loaded_sounds[AudibleAlertSP.promptSingleLow]
       written = 0
       while sample.size and written < frames:
@@ -159,11 +161,12 @@ class Soundd(QuietMode):
       self._sign_frame = 0
       voice_allowed = self.current_alert == AudibleAlert.none and not self.enabled
 
+    volume = self.current_volume
     voice = self._tw_voice
     if voice is not None:
       try:
         if voice_allowed:
-          voice.render(ret, True, time.monotonic())
+          voice.render(ret, True, time.monotonic(), volume, speed_chime)
         else:
           # A native alert owns the entire buffer; never pass it to the optional mixer.
           voice.pause()
@@ -171,7 +174,7 @@ class Soundd(QuietMode):
         # Optional audio must never abort the PortAudio callback; no logging/I/O here.
         self._tw_voice = None
 
-    return ret * self.current_volume
+    return ret * volume
 
   def callback(self, data_out: np.ndarray, frames: int, time, status) -> None:
     if status:
